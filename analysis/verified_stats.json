@@ -1,0 +1,80 @@
+{
+  "high": {
+    "n": 87,
+    "likes": {
+      "available_n": 87,
+      "missing_n": 0,
+      "mean": 326.7,
+      "median": 176
+    },
+    "favorites": {
+      "available_n": 87,
+      "missing_n": 0,
+      "mean": 225.66,
+      "median": 105
+    },
+    "comments": {
+      "available_n": 64,
+      "missing_n": 23,
+      "mean": 50.38,
+      "median": 9.5
+    },
+    "author_name_medical_terms_n": 23,
+    "body_keyword_counts": {
+      "注意事项": 12,
+      "术后": 13,
+      "怎么选": 2,
+      "避坑": 4,
+      "体验": 13,
+      "对比": 3,
+      "多少钱": 5
+    }
+  },
+  "low": {
+    "n": 100,
+    "likes": {
+      "available_n": 100,
+      "missing_n": 0,
+      "mean": 16.72,
+      "median": 11.5
+    },
+    "favorites": {
+      "available_n": 85,
+      "missing_n": 15,
+      "mean": 12.51,
+      "median": 8
+    },
+    "comments": {
+      "available_n": 45,
+      "missing_n": 55,
+      "mean": 8.96,
+      "median": 2
+    },
+    "author_name_medical_terms_n": 9,
+    "body_keyword_counts": {
+      "注意事项": 5,
+      "术后": 11,
+      "怎么选": 6,
+      "避坑": 8,
+      "体验": 19,
+      "对比": 1,
+      "多少钱": 0
+    }
+  },
+  "ocr": {
+    "note_n": 87,
+    "image_n": 233,
+    "empty_image_n": 13,
+    "notes_over_10_newlines": 72,
+    "warning": "OCR换行数量不是图片形态标注；无低赞组OCR对照。"
+  },
+  "image_likes_pearson_high_only": 0.049,
+  "audit": {
+    "source_n": 200,
+    "source_missing_likes": 13,
+    "decoded_images": 233,
+    "ocr_unique_paths": 233,
+    "errors": [],
+    "source_sha256": "677fbc841e55e352f0cd4fbb03bf84aa8c3d53c2487b36e1c1d18aede268cd48"
+  }
+}

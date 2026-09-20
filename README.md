@@ -13,17 +13,19 @@
 | 路径 | 用途 |
 |---|---|
 | studio/ | 当前网页、接口、模型拆解与本地图片排版 |
+| collector/ | 小红书案例采集器与资料包导出（采集→分析→创作链路的入口） |
+| analysis/ | 高赞图文归因分析脚本与聚合统计（不含采集的原始数据） |
 | design/frontend-review.html | 视觉参考稿；实际工作台入口已接入同一套界面 |
 | knowledge/procedures.md | M22事实资料摘要 |
 | knowledge/shooting_guide.json | 当前运行的创作指南（不是经过验证的爆款规律） |
-| outputs/studio/ | 用户任务、原图、生成图、访问口令和唯一 evidence 证据目录，必须保留且不能公开 |
+| outputs/studio/ | 用户任务、原图、生成图、访问口令和唯一 evidence 证据目录，必须保留且不能公开（已列入 .gitignore） |
 | test_studio.py | 离线接口测试 |
 | BADCASES.md | 产品问题记录 |
 | DEPLOYMENT.md | 安装与部署说明 |
 
-## 与xhs的边界
+## 与采集端的衔接
 
-xhs导出ZIP资料包，工作台导入并保存独立版本。双方不互相导入内部代码，不直接写对方文件。导入器已经实现，传递ZIP仍由人操作。
+案例资料包由本仓库 `collector/export_cases.py` 导出（ZIP），在工作台"案例资料库"导入并保存独立版本。采集的原始数据（图片、笔记全文、浏览器档案）只存在于本地运行环境，不进入仓库。
 
 ## 当前流程（2026-09-17）
 

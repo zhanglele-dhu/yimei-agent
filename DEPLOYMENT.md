@@ -29,7 +29,7 @@ Dockerfile使用requirements-studio.lock.txt及当前studio、knowledge。配置
 
 ## 案例导入与恢复
 
-在xhs目录执行 `.\.venv-collector\Scripts\python.exe export_cases.py`，得到`data/exports/m22_cases.zip`。在工作台“案例资料库”选择ZIP并导入；同一包重复导入复用版本。已创建任务保留选中的原版本，不会被新包静默替换。
+在装有采集环境的机器上运行 `collector/export_cases.py`（本仓库内的采集器代码快照；带虚拟环境的实时采集目录在本机另处维护），得到案例资料 ZIP。在工作台"案例资料库"选择ZIP并导入；同一包重复导入复用版本。已创建任务保留选中的原版本，不会被新包静默替换。
 
 工作台首页使用 `studio/static/index.html` 的视觉壳，实际交互由 `studio/static/app.js` 调用当前 API。连接后先在首页“案例资料管理”导入 ZIP，再点击“开始”走主题、案例、拆解、共创、导出；拆解中的检索、语言、视觉、资料、写作五步逐一确认，退回时填写建议后通过 `analysis-stage` 重做当前步；右上角“反馈”用于给已有草稿记录平台原文并请求分析。
 
