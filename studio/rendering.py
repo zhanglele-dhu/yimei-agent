@@ -28,7 +28,7 @@ def wrap(text, draw, ft, width):
     return lines
 
 
-def render(title, text, photo=None, background=None):
+def render(title, text, photo=None, background=None, page=None, total_pages=None):
     original = None
     if photo:
         with Image.open(io.BytesIO(photo)) as im:
@@ -46,7 +46,7 @@ def render(title, text, photo=None, background=None):
         title_font=font(size);body_font=font(max(14,round(size*.6)))
         tl=wrap(title,draw,title_font,width-2*pad-max(12,width//50)) if title else []
         bl=wrap(text,draw,body_font,width-2*pad) if text else []
-        title_step=round(size*1.45); body_step=round(max(14,round(size*.6))*1.6)
+        title_step=round(size*1.45); body_step=round(max(14,round(size*.6))*1.75)
         height=pad*2+len(tl)*title_step+(pad if tl and bl else 0)+len(bl)*body_step
         if original or height<=1380:break
         size-=2
@@ -70,23 +70,38 @@ def render(title, text, photo=None, background=None):
         out=bg.crop((left,top,left+width,top+total))
     else:
         out=Image.new('RGB',(width,total),'#f5f3eb')
-    if (title or text) and background is not None and original is None:
-        # 半透明圆角面板垫在文字下方，保证任意底图上的可读性
-        panel_bottom=min(total-8,pad*2+len(tl)*title_step+(pad if tl and bl else 0)+len(bl)*body_step+round(pad*.5))
-        overlay=Image.new('RGBA',out.size,(0,0,0,0))
-        ImageDraw.Draw(overlay).rounded_rectangle(
-            (round(pad*.5),max(6,round(pad*.5)),width-round(pad*.5),panel_bottom),
-            radius=round(width*.045),fill=(255,255,255,210))
-        out=Image.alpha_composite(out.convert('RGBA'),overlay).convert('RGB')
-    d=ImageDraw.Draw(out)
-    if title or text:
-        d.rectangle((pad,round(pad*.55),pad+max(5,width//140),pad+len(tl)*title_step),fill='#21634f')
-    y=pad
-    for line in tl:
-        d.text((pad+max(12,width//50),y),line,font=title_font,fill='#163d32');y+=title_step
-    if tl and bl:y+=pad
-    for line in bl:
-        d.text((pad,y),line,font=body_font,fill='#273b35');y+=body_step
+    use_bg = background is not None and original is None
+    if (title or text):
+        if use_bg:
+            # 内容块垂直居中（略偏上），避免文字挤在顶部、下方大片空白
+            content_top=max(pad,(total-height)//2-round(total*0.04))
+            overlay=Image.new('RGBA',out.size,(0,0,0,0))
+            ImageDraw.Draw(overlay).rounded_rectangle(
+                (round(pad*.5),max(8,content_top-round(pad*.6)),
+                 width-round(pad*.5),min(total-8,content_top+height+round(pad*.4))),
+                radius=round(width*.045),fill=(255,255,255,225))
+            out=Image.alpha_composite(out.convert('RGBA'),overlay).convert('RGB')
+        else:
+            content_top=pad
+        d=ImageDraw.Draw(out)
+        # 标题左侧强调竖条
+        d.rectangle((pad,content_top+round(pad*.1),pad+max(5,width//140),
+                     content_top+round(pad*.1)+len(tl)*title_step),fill='#21634f')
+        y=content_top
+        for line in tl:
+            d.text((pad+max(12,width//50),y),line,font=title_font,fill='#163d32');y+=title_step
+        if tl and bl:y+=round(pad*.9)
+        for line in bl:
+            d.text((pad,y),line,font=body_font,fill='#273b35');y+=body_step
+        # 页码角标（右下角），仅多页时显示
+        if page and total_pages and total_pages>1:
+            chip_font=font(max(14,round(size*.5)))
+            chip=f'{page} / {total_pages}'
+            cw=round(draw.textlength(chip,font=chip_font))+round(pad*.8)
+            ch=round(size*.9)
+            cx,cy=width-pad-cw,total-pad-ch
+            d.rounded_rectangle((cx,cy,cx+cw,cy+ch),radius=ch//2,fill='#21634f')
+            d.text((cx+round(pad*.4),cy+round(ch*.12)),chip,font=chip_font,fill='#ffffff')
     if original:out.paste(original,(0,header_height))
     b=io.BytesIO();out.save(b,format='PNG')
     return b.getvalue(), {'width':width,'height':total,'photo_offset_y':header_height,

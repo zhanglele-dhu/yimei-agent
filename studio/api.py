@@ -397,9 +397,11 @@ def make_page(task_id:str,number:int,body:PageEdit):
         entry=task['backgrounds'].get(str(number))
         if body.regenerate_background or not entry:
             spec=outline.get('visual_spec','')
-            bg_prompt=('为一张小红书医美科普图文卡生成纯装饰底图，画面中绝对不要出现任何文字、字母或数字。'
-                       f'风格：{spec or "干净、现代、柔和的医美科普风格"}。'
-                       '构图简洁，装饰元素沿边缘或底部布置，中央偏上留出大片浅色留白区域供标题与正文排版。')
+            bg_prompt=('为一张小红书医美科普图文卡生成纯装饰底图，画面中绝对不要出现任何文字、字母、数字或水印。'
+                       f'风格：{spec or "极简现代医美风：浅色纯净底，细线几何装饰或柔和同色系色块"}。'
+                       '硬性构图要求：整体极简，装饰元素只允许出现在画面四角和底边，'
+                       '画面中央60%以上区域必须是干净均匀的浅色纯色留白，供后续排版文字；'
+                       '扁平几何风格。禁止：真实照片质感、花卉植物、复杂纹理、深色底、渐变噪点。')
             try:
                 data=llm.generate_background(bg_prompt)
                 folder=DATA/'backgrounds'/task_id;folder.mkdir(parents=True,exist_ok=True)
@@ -412,7 +414,8 @@ def make_page(task_id:str,number:int,body:PageEdit):
         if entry:
             bg_path=DATA/'backgrounds'/task_id/entry['file']
             if bg_path.exists():bg_bytes=bg_path.read_bytes()
-    try:rendered,meta=rendering.render(body.title,body.text,raw,background=bg_bytes)
+    try:rendered,meta=rendering.render(body.title,body.text,raw,background=bg_bytes,
+                                       page=number,total_pages=len(task['draft']['pages']))
     except ValueError as exc:raise HTTPException(422,str(exc)) from None
     folder=DATA/'cards'/task_id;folder.mkdir(parents=True,exist_ok=True)
     filename=f'{number:02d}_{uuid4().hex}.png';path=folder/filename;path.write_bytes(rendered)
