@@ -807,7 +807,7 @@ async function renderCreate() {
       await render();
     }, 'btn quiet'));
   } else {
-    panel.append(el('div', '这是纯文字卡，不需要伪造实拍照片。AI 只负责排版，事实仍由你确认。', 'future-box'));
+    panel.append(el('div', '这是文字卡：AI 生成装饰底图，标题和文字由程序排版叠加，保证内容准确。底图生成失败时自动使用纯色底。', 'future-box'));
   }
   const pageTitle = field(panel, '本页标题（可以修改）', page.title, 'input');
   pageTitle.maxLength = 60;
@@ -828,6 +828,13 @@ async function renderCreate() {
     })
   );
   if (task.renders?.[String(number)]) await imageInto(panel, '/tasks/' + task.id + '/pages/' + number + '/render', '本页成品预览');
+  if (outline.kind === 'text' && task.renders?.[String(number)]) {
+    actions.append(button('重新生成底图', () => {
+      if (dirty) throw new Error('文字有改动，请先保存');
+      if (!confirmed.checked) throw new Error('重新生成底图会重做本页图片，请先勾选确认');
+      return mutate('/pages/' + number, { title: pageTitle.value, text: pageText.value, confirmed: true, resolution: resolution.value, regenerate_background: true });
+    }, 'btn quiet'));
+  }
   panel.append(actions);
   const navigation = el('div', undefined, 'page-actions');
   if (index > 0) navigation.append(button('上一页', async () => {

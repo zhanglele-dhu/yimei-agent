@@ -32,14 +32,14 @@ if __name__ == '__main__':
     import uvicorn
     print('门店拍摄与图文助手：http://127.0.0.1:8010')
     print('本机访问口令（粘贴到网页）：' + os.environ['STUDIO_ACCESS_TOKEN'])
-    print('用户实拍只做本地排版；Anthropic模式可能发送参考原图做拆解。')
+    print('文字轨：DeepSeek。视觉/画图轨：智谱GLM-4V与CogView，在.env配置VISION_API_KEY后自动启用。')
     def open_when_ready():
         for _ in range(40):
             try:
                 with urllib.request.urlopen('http://127.0.0.1:8010/healthz', timeout=1) as response:
                     import json
-                    if response.status == 200 and json.load(response).get('version') == 'cases-20260920-4':
-                        webbrowser.open('http://127.0.0.1:8010/?v=cases-20260920-4#token=' + os.environ['STUDIO_ACCESS_TOKEN'])
+                    if response.status == 200 and json.load(response).get('version') == 'cases-20260921-1':
+                        webbrowser.open('http://127.0.0.1:8010/?v=cases-20260921-1#token=' + os.environ['STUDIO_ACCESS_TOKEN'])
                         return
             except OSError:
                 time.sleep(0.5)

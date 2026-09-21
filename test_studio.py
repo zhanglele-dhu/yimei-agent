@@ -119,6 +119,31 @@ class StudioTests(unittest.TestCase):
         self.assertEqual([r['case']['id'] for r in ranked],['b','c','a'])
 
     @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_ai_background_render_and_fallback(self,mock):
+        t=self.ready()
+        # 未配置画图轨：确认页面自动降级纯色底，不阻断流程
+        t=self.post(t,'/pages/1',title=t['draft']['pages'][0]['title'],text=t['draft']['pages'][0]['text'],confirmed=True)
+        self.assertEqual(t['renders']['1']['method'],'plain_fallback_layout')
+        # 配置画图轨后：AI 底图成功，标记为合成渲染并保留底图记录
+        with patch('studio.llm.generate_background',return_value=picture()),\
+             patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}):
+            t=self.post(t,'/pages/2',title=t['draft']['pages'][1]['title'],text=t['draft']['pages'][1]['text'],confirmed=True)
+        self.assertEqual(t['renders']['2']['method'],'ai_background_composited')
+        self.assertIn('2',t['backgrounds'])
+        self.assertTrue((api.DATA/'backgrounds'/t['id']/t['backgrounds']['2']['file']).exists())
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_vision_analyze_uses_reference_images(self,mock):
+        t=self.create()
+        def vision_fake(schema,instruction,sources,images):
+            assert images,'视觉分析必须携带参考图'
+            return fake_generate(schema,instruction,sources,images)
+        with patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}),\
+             patch('studio.llm.generate_vision',side_effect=vision_fake):
+            t=self.post(t,'/analyze')
+        self.assertIn('原图',t['analysis_basis'])
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
     def test_analysis_stage_gates_and_reject_reruns_current_step(self,mock):
         t=self.create()
         self.assertEqual(self.client.post('/api/tasks/'+t['id']+'/analysis-stage',json={'revision':0,'stage':'language','decision':'accept'}).status_code,409)

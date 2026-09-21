@@ -18,7 +18,7 @@ from PIL import Image, UnidentifiedImageError
 from . import cases, llm, rendering
 from .models import (CreateTask, Revision, Analysis, AnalysisConfirmation, Draft, PageEdit,
                      CopyEdit, Progress, FeedbackInput, FeedbackAnalysis, AnalysisStageDecision,
-                     CaseRanking)
+                     CaseRanking, VisionRelevance)
 
 ROOT=Path(__file__).resolve().parents[1]
 load_dotenv(ROOT/'.env',override=False)
@@ -26,7 +26,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20260920-4'
+VERSION='cases-20260921-1'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 if len(TOKEN)<24:raise RuntimeError('请使用启动脚本，或配置至少24字符的STUDIO_ACCESS_TOKEN')
 Image.MAX_IMAGE_PIXELS=16_000_000
@@ -95,7 +95,10 @@ def sources_for(task):
 def invoke(task,schema,instruction,images=None):
     sources=sources_for(task)
     try:
-        result,trace=llm.generate(schema,instruction,sources,images=images)
+        if images:
+            result,trace=llm.generate_vision(schema,instruction,sources,images)
+        else:
+            result,trace=llm.generate(schema,instruction,sources)
     except Exception as exc:
         task.setdefault('failures',[]).append({'action':schema.__name__,'error_type':type(exc).__name__,
                                                'time':datetime.now(timezone.utc).isoformat()})
@@ -149,6 +152,22 @@ def rank_and_select(manifest, project, question, audience):
             fallback['reason'] = '模型打分未完成，已回退关键词规则：' + fallback['reason']
         return selected, fallback
     scores = {item.case_id: item.relevance for item in ranking.scores}
+    # 视觉补判：首图OCR文字过少(<40字)但点赞高(≥500)的候选，文字依据不足，交视觉轨看图判相关度（每任务最多5篇）
+    supplemented = 0
+    if llm.supports_vision():
+        sparse = [c for c in pool if len(c['pages'][0]['ocr'].strip()) < 40 and c['likes'] >= 500]
+        sparse.sort(key=lambda c: -c['likes'])
+        for c in sparse[:5]:
+            try:
+                img = cases.image_bytes(BUNDLES, manifest['bundle_id'], c['id'], 1)
+                verdict, _ = llm.generate_vision(VisionRelevance,
+                    {'action': '仅凭这张首图判断：该帖能否帮助回答用户问题？输出相关度1-10（10=直接回答，4以下=仅主题相同内容无关）。'},
+                    [{'id': 'FIRSTPAGE', 'type': '候选帖首图（文字信息不足，需看图判断）', 'content': {'title': c['title'], 'likes': c['likes']}}],
+                    [{'number': 1, 'data': img}])
+                scores[c['id']] = verdict.relevance
+                supplemented += 1
+            except Exception:
+                continue
     ranked = cases.combine_ranking(pool, scores)
     if not ranked:
         selected, fallback = cases.select(manifest, project, question)
@@ -162,7 +181,8 @@ def rank_and_select(manifest, project, question, audience):
         'eligible_count': len(pool),
         'reason': f"AI 读完 {len(pool)} 篇候选，认为《{top['case']['title']}》最能回答你的问题"
                   f"（相关度 {top['relevance']}/10，{top['case']['likes']} 赞）。"
-                  f"点赞不是唯一标准：相关度不够的帖子再热门也不会被选中。",
+                  f"点赞不是唯一标准：相关度不够的帖子再热门也不会被选中。"
+                  + (f"另有 {supplemented} 篇文字过少的高赞帖由视觉模型看图补判。" if supplemented else ''),
         'metric': '综合分=相关性×7+点赞归一化×30，相关性≤3淘汰；相关性由模型判断，排序由代码计算',
         'candidate_ids': [item['case']['id'] for item in ranked],
         'method': 'llm_relevance_plus_likes',
@@ -222,7 +242,7 @@ def analyze(task_id:str,body:Revision):
     # Only reference images, never user photos, may be sent for optional visual analysis.
     if llm.supports_vision():
         images=[{'number':p['number'],'data':cases.image_bytes(BUNDLES,task['request']['bundle_id'],task['case']['id'],p['number'])} for p in pages]
-    result=invoke(task,Analysis,{'action':'逐页拆解原帖，区分原帖观察、可借鉴组织方式与新内容大纲。original_pages必须每原图一条，number按原序；ocr_quote逐字摘取本页OCR，缺字留空。无视觉输入时form注明仅按OCR推测，不能判断配色或布局。outline按帖子结构搭配页面类型：默认门店具备实拍条件，第一页优先文字卡作封面总领，中间按内容安排实拍页（instruction写清建议拍摄的对象与要点，供门店照着拍）或文字卡（清单、对比、说明），最后可安排引导页；避免所有页面同一类型。仅当资料明确说明无法拍摄时才全文字卡。每页附source_pages来源页码，不为凑图虚构必须实拍的画面。不给未经核实的医学答案，只列缺少哪些事实。',
+    result=invoke(task,Analysis,{'action':'逐页拆解原帖，区分原帖观察、可借鉴组织方式与新内容大纲。original_pages必须每原图一条，number按原序；ocr_quote逐字摘取本页OCR，缺字留空。无视觉输入时form注明仅按OCR推测，不能判断配色或布局。outline按帖子结构搭配页面类型：默认门店具备实拍条件，第一页优先文字卡作封面总领，中间按内容安排实拍页（instruction写清建议拍摄的对象与要点，供门店照着拍）或文字卡（清单、对比、说明），最后可安排引导页；避免所有页面同一类型。仅当资料明确说明无法拍摄时才全文字卡。每页附source_pages来源页码，不为凑图虚构必须实拍的画面。outline每页的visual_spec用一句中文描述该页底图应有的视觉风格与装饰元素（配色基调、图形母题、氛围，不含任何文字要求）；有视觉输入时提炼借鉴原帖的视觉语言，无视觉输入时基于内容主题谨慎建议。不给未经核实的医学答案，只列缺少哪些事实。',
         'request':task['request'],'visual_input':bool(images)},images=images)
     validate_analysis(result,task)
     stages={name:{'status':'ready'} for name in ANALYSIS_STAGES}
@@ -340,7 +360,29 @@ def make_page(task_id:str,number:int,body:PageEdit):
         if not asset:raise HTTPException(409,'本页需要实拍，请先保存照片')
         raw=(DATA/'assets'/task_id/asset['file']).read_bytes()
     if outline['kind']=='text' and not (body.title.strip() or body.text.strip()):raise HTTPException(422,'文字卡不能空白')
-    try:rendered,meta=rendering.render(body.title,body.text,raw)
+    # 文字卡底图：AI 生成装饰底图（不含文字），生成失败自动降级纯色底，不阻断流程
+    bg_bytes=None
+    if outline['kind']=='text':
+        task.setdefault('backgrounds',{})
+        entry=task['backgrounds'].get(str(number))
+        if body.regenerate_background or not entry:
+            spec=outline.get('visual_spec','')
+            bg_prompt=('为一张小红书医美科普图文卡生成纯装饰底图，画面中绝对不要出现任何文字、字母或数字。'
+                       f'风格：{spec or "干净、现代、柔和的医美科普风格"}。'
+                       '构图简洁，装饰元素沿边缘或底部布置，中央偏上留出大片浅色留白区域供标题与正文排版。')
+            try:
+                data=llm.generate_background(bg_prompt)
+                folder=DATA/'backgrounds'/task_id;folder.mkdir(parents=True,exist_ok=True)
+                filename=f'{number:02d}_{uuid4().hex[:8]}.img'
+                (folder/filename).write_bytes(data)
+                entry={'file':filename,'spec':spec,'generated_at':datetime.now(timezone.utc).isoformat()}
+                task['backgrounds'][str(number)]=entry
+            except Exception as exc:
+                task.setdefault('failures',[]).append({'action':'generate_background','error_type':type(exc).__name__,'time':datetime.now(timezone.utc).isoformat()})
+        if entry:
+            bg_path=DATA/'backgrounds'/task_id/entry['file']
+            if bg_path.exists():bg_bytes=bg_path.read_bytes()
+    try:rendered,meta=rendering.render(body.title,body.text,raw,background=bg_bytes)
     except ValueError as exc:raise HTTPException(422,str(exc)) from None
     folder=DATA/'cards'/task_id;folder.mkdir(parents=True,exist_ok=True)
     filename=f'{number:02d}_{uuid4().hex}.png';path=folder/filename;path.write_bytes(rendered)

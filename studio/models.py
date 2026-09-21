@@ -9,6 +9,10 @@ class CaseScore(BaseModel):
 class CaseRanking(BaseModel):
     scores: list[CaseScore] = Field(min_length=1)
 
+class VisionRelevance(BaseModel):
+    relevance: int = Field(ge=1, le=10)
+    reason: str = Field(default='', max_length=300)
+
 class CreateTask(BaseModel):
     project: str = Field(min_length=1, max_length=100)
     audience: str = Field(min_length=1, max_length=300)
@@ -31,6 +35,7 @@ class OutlinePage(BaseModel):
     kind: Literal['text', 'photo']
     purpose: str
     instruction: str
+    visual_spec: str = Field(default='', max_length=600)
     source_pages: list[int] = Field(min_length=1)
 
 class Analysis(BaseModel):
@@ -66,6 +71,7 @@ class PageEdit(Revision):
     text: str = Field(max_length=700)
     confirmed: bool
     resolution: str = Field(default='', max_length=2000)
+    regenerate_background: bool = False
 
 class CopyEdit(Revision):
     title: str = Field(min_length=1, max_length=100)
