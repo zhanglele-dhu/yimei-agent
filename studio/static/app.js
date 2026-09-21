@@ -569,6 +569,7 @@ async function renderStageFlow(parent) {
     return;
   }
   if (current === 'retrieval') {
+    sourceCard(box);
     box.append(el('p', task.selection.reason + ' 共 ' + task.selection.eligible_count + ' 篇相关候选，当前展示点赞快照最高的一篇。', 'muted'));
     const candidates = task.selection.candidate_ids || [];
     if (candidates.length) box.append(el('p', '候选编号：' + candidates.join('、'), 'source-link'));
@@ -640,7 +641,6 @@ async function renderModes() {
   const side = el('aside', undefined, 'panel side-card');
   main.append(el('h2', '小红书高赞仿写'), el('p', '当前 Agent 会按规则筛选相关案例，再用模型完成逐页拆解。模型不会自动替你确认成品。', 'muted'));
   pipeline(main);
-  if (task?.case) sourceCard(main);
   if (!task) {
     main.append(el('div', '连接工作台并选择案例资料版本后，点击开始；如果已有资料，会自动进入案例检索。', 'future-box'));
     main.append(button('开始检索并拆解', startHighWorkflow));
@@ -652,6 +652,7 @@ async function renderModes() {
       await startHighWorkflow();
     }, 'btn quiet'));
   } else if (task.draft) {
+    if (task.case) sourceCard(main);
     main.append(el('div', '草稿已生成，进入逐页共创。', 'future-box'));
     main.append(button('进入共创', async () => { screenId = 'create'; await render(); }));
     main.append(button('重新生成草稿（按已确认大纲重写）', async () => {
@@ -668,6 +669,7 @@ async function renderModes() {
       await render();
     }, 'btn quiet'));
   } else if (task.confirmed_analysis) {
+    if (task.case) sourceCard(main);
     main.append(el('h3', '拆解已确认'));
     task.confirmed_analysis.outline.forEach((item, index) => main.append(el('p', String(index + 1) + '. ' + (item.kind === 'text' ? '文字卡' : '实拍页') + '：' + item.purpose)));
     main.append(button('生成逐页草稿，进入共创', generateDraft));
