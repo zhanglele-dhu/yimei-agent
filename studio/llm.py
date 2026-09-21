@@ -52,11 +52,15 @@ def _parse(schema, raw):
     return schema.model_validate_json(raw[start:end])
 
 
-def _repair_json(broken: str, parse_error: str) -> str:
+def _repair_json(broken: str, parse_error: str, placeholders=None) -> str:
     """单次跨模型修复：GLM 的残缺 JSON 交给文字轨（DeepSeek）修一次，只修格式不改内容。"""
     from openai import OpenAI
     if not os.getenv('DEEPSEEK_API_KEY'):
         raise ValueError(broken)
+    extra = ''
+    if placeholders:
+        extra = ('\n以下值是占位描述，必须依据JSON内已有的真实观察内容改写为具体中文'
+                 f'（不得原样保留）：{json.dumps(placeholders[:12], ensure_ascii=False)}')
     result = OpenAI(api_key=os.environ['DEEPSEEK_API_KEY'], base_url='https://api.deepseek.com',
                     timeout=120, max_retries=0).chat.completions.create(
         model=os.getenv('STUDIO_MODEL', 'deepseek-chat'), max_tokens=2048,
@@ -67,7 +71,7 @@ def _repair_json(broken: str, parse_error: str) -> str:
                    '字符串列表的元素只能是字符串、补齐缺失的必备字段。'
                    '若 outline 缺失或为空数组，可依据 summary 与 original_pages 中已有的观察'
                    '拟一份1-6页的outline（每页含kind/purpose/instruction/source_pages），'
-                   '只重组已有信息，不新增医学结论。'},
+                   '只重组已有信息，不新增医学结论。' + extra},
                   {'role': 'user', 'content': f'以下JSON有问题（{parse_error[:300]}），修复它：\n\n{broken[:6000]}'}])
     return result.choices[0].message.content or ''
 
@@ -107,15 +111,26 @@ def generate(schema, task, sources, images=None):
     return parsed, _trace_fields('deepseek', SYSTEM_PROMPT, prompt, parsed, [])
 
 
+def _leaf_strings(obj):
+    if isinstance(obj, dict):
+        for v in obj.values():
+            yield from _leaf_strings(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _leaf_strings(v)
+    elif isinstance(obj, str):
+        yield obj.strip()
+
+
 def generate_vision(schema, task, sources, images):
     """视觉轨：智谱 GLM-4V，参考图+文字输入。images: [{'number': int, 'data': bytes}]
-    注意：GLM-4V 的 max_tokens 上限 2048，调用方应传 *Compact 系列瘦身 schema。"""
+    注意：GLM-4V 的 max_tokens 上限 2048，调用方应传 *Compact 系列瘦身 schema。
+    鲁棒性：占位符泄漏/格式坏 → 带图自我纠正一次 → 仍失败交 DeepSeek 修一次 → 才放弃。"""
     if not _vision_enabled():
         raise RuntimeError('视觉轨未配置（需要 VISION_PROVIDER=glm 和 VISION_API_KEY）')
     from openai import OpenAI
-    # GLM-4V 指令遵循较弱：不投喂 schema 定义（会诱发逐字回显），改用"示例教学法"——
-    # 只给一个同结构的已填示例，要求替换示例值为真实分析。示例即结构，一石二鸟。
     example = _mini_example(schema)
+    example_leaves = {s for s in _leaf_strings(example) if s and s != '…'}
     prompt = (
         '观察参考图，参照下面这个JSON示例的结构填写真实分析：'
         '保持所有字段名和嵌套结构完全一致，把示例值全部替换成你从图中看到的内容。'
@@ -129,17 +144,57 @@ def generate_vision(schema, task, sources, images):
     content = [{'type': 'image_url', 'image_url': {'url': f"data:image/jpeg;base64,{_image_b64(img['data'])}"}}
                for img in images]
     content.append({'type': 'text', 'text': prompt})
-    result = OpenAI(api_key=os.environ['VISION_API_KEY'], base_url='https://open.bigmodel.cn/api/paas/v4',
-                    timeout=180, max_retries=0).chat.completions.create(
-        model=os.getenv('STUDIO_VISION_MODEL', 'glm-4v-plus'), max_tokens=2048,
-        messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': content}])
+    client = OpenAI(api_key=os.environ['VISION_API_KEY'], base_url='https://open.bigmodel.cn/api/paas/v4',
+                    timeout=180, max_retries=0)
+    model = os.getenv('STUDIO_VISION_MODEL', 'glm-4v-plus')
+    messages = [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': content}]
+
+    result = client.chat.completions.create(model=model, max_tokens=2048, messages=messages)
     raw = result.choices[0].message.content or ''
-    try:
-        parsed = _parse(schema, raw)
-    except Exception as first_error:
-        # 单次修复：JSON 语法残缺时交给文字轨修一次（不循环）；仍失败才向上抛
-        fixed = _repair_json(raw, str(first_error))
-        parsed = _parse(schema, fixed)
+
+    def parse_ok(text):
+        """解析 + 占位符就地清除（清空而非失败：用户在确认步骤可见、可改、可退回重做）。"""
+        try:
+            parsed = _parse(schema, text)
+        except Exception as err:
+            return None, err
+        dump = parsed.model_dump()
+
+        def walk(o):
+            if isinstance(o, dict):
+                return {k: walk(v) for k, v in o.items()}
+            if isinstance(o, list):
+                return [walk(x) for x in o]
+            if isinstance(o, str) and o.strip() in example_leaves:
+                return ''
+            return o
+
+        cleaned = walk(dump)
+        sanitized = sum(1 for a, b in zip(_leaf_strings(dump), _leaf_strings(cleaned)) if a and not b)
+        parsed = schema.model_validate(cleaned)
+        return (parsed, sanitized), None
+
+    parsed, err = parse_ok(raw)
+    sanitized_count = 0
+    if parsed is None:
+        # 带图自我纠正一次：把上次的输出和错误发回去，让看过图的模型自己改
+        messages = messages + [
+            {'role': 'assistant', 'content': raw[:4000]},
+            {'role': 'user', 'content': f'你上面的输出不合格：{str(err)[:300]}。'
+             '不要复制示例值，必须替换成你从参考图中看到的真实内容，重新只输出一个JSON。'}]
+        result2 = client.chat.completions.create(model=model, max_tokens=2048, messages=messages)
+        raw2 = result2.choices[0].message.content or ''
+        parsed, err2 = parse_ok(raw2)
+        if parsed is None:
+            # 最后一次机会：交 DeepSeek 修结构（不循环）
+            fixed = _repair_json(raw2, str(err2))
+            parsed, err3 = parse_ok(fixed)
+            if parsed is None:
+                raise err3 or err2 or err
+    parsed, sanitized_count = parsed
+    trace = _trace_fields('glm-vision', SYSTEM_PROMPT, prompt, parsed, images)
+    trace['placeholder_sanitized'] = sanitized_count
+    return parsed, trace
     return parsed, _trace_fields('glm-vision', SYSTEM_PROMPT, prompt, parsed, images)
 
 
