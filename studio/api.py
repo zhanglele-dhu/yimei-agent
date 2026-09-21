@@ -219,13 +219,30 @@ def reference(task_id:str,number:int):
     with Image.open(io.BytesIO(raw)) as im:mime=Image.MIME.get(im.format,'image/png')
     return Response(raw,media_type=mime)
 
+def _norm_text(s):
+    """引文比对用的归一化：去空白与常见中英文标点，转小写。"""
+    import re as _re
+    return _re.sub(r'[\s，。；：、！？“”‘’（）《》【】·…\-\.,;:!?\(\)\[\]"\']+', '', (s or '')).lower()
+
+
+def clean_ocr_quotes(output,task):
+    """视觉模型的引文来自看图，可能与带识别噪声的库内OCR不逐字一致。
+    归一化后仍不一致的引文清空（留待人工核对），不再一票否决整份分析。"""
+    pages=task['case']['pages']
+    for p in output.original_pages:
+        if not p.ocr_quote:continue
+        original=next(x for x in pages if x['number']==p.number)
+        if p.ocr_quote not in original['ocr'] and _norm_text(p.ocr_quote) not in _norm_text(original['ocr']):
+            p.ocr_quote=''
+
+
 def validate_analysis(output,task):
     pages=task['case']['pages'];valid={p['number'] for p in pages}
     if [p.number for p in output.original_pages]!=[p['number'] for p in pages]:
         raise HTTPException(422,'拆解必须按原图顺序逐页对应，不能增删原帖页码')
     for p in output.original_pages:
         original=next(x for x in pages if x['number']==p.number)
-        if p.ocr_quote and p.ocr_quote not in original['ocr']:
+        if p.ocr_quote and p.ocr_quote not in original['ocr'] and _norm_text(p.ocr_quote) not in _norm_text(original['ocr']):
             raise HTTPException(422,'OCR引文与原页不一致，请核对后重试')
     if any(not set(p.source_pages)<=valid for p in output.outline):
         raise HTTPException(422,'新页引用了不存在的原帖页码')
@@ -250,6 +267,7 @@ def analyze(task_id:str,body:Revision):
         'request':task['request'],'visual_input':bool(images)},images=images)
     if isinstance(result,AnalysisCompact):
         result=result.to_analysis()
+    clean_ocr_quotes(result,task)
     validate_analysis(result,task)
     stages={name:{'status':'ready'} for name in ANALYSIS_STAGES}
     if task.get('analysis_stages',{}).get('retrieval',{}).get('status')=='accepted':
@@ -284,7 +302,9 @@ def analysis_stage(task_id:str,body:AnalysisStageDecision):
         decisions.append({'stage':stage,'decision':'accept','feedback':body.feedback,'time':datetime.now(timezone.utc).isoformat()})
         return save(task,body.revision)
     images=[]
-    if stage=='visual' and llm.supports_vision():
+    # 重做的都是同一份 Analysis：视觉轨可用就带参考图走视觉轨（含瘦身合同+修复栈），
+    # 不再限定 visual 步骤；无视觉轨时走文字轨完整 schema。
+    if llm.supports_vision():
         images=[{'number':p['number'],'data':cases.image_bytes(BUNDLES,task['request']['bundle_id'],task['case']['id'],p['number'])} for p in task['case']['pages']]
     rerun_schema = AnalysisCompact if images else Analysis
     result=invoke(task,rerun_schema,{
@@ -296,6 +316,7 @@ def analysis_stage(task_id:str,body:AnalysisStageDecision):
         images=images)
     if isinstance(result,AnalysisCompact):
         result=result.to_analysis()
+    clean_ocr_quotes(result,task)
     validate_analysis(result,task)
     task['analysis']=result.model_dump()
     for name in ANALYSIS_STAGES[position:]:stages[name]={'status':'ready'}

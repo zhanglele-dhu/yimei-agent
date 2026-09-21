@@ -32,12 +32,12 @@ class ObservedPage(BaseModel):
     uncertainty: str = ''
 
 class ObservedPageCompact(BaseModel):
-    number: int
-    form: str = ''
-    observation: str = ''
-    ocr_quote: str = ''
-    borrow: str = ''
-    uncertainty: str = ''
+    number: int = Field(description='原帖页码，整数')
+    form: str = Field(default='', description='这一页的形态，10字内，如：信息图/实拍/纯文字')
+    observation: str = Field(default='', description='描述这一页的画面与文字内容，40字内')
+    ocr_quote: str = Field(default='', description='逐字摘抄本页OCR原文片段，没有则留空')
+    borrow: str = Field(default='', description='这一页可借鉴的组织方式，20字内')
+    uncertainty: str = Field(default='', description='不确定之处，没有则留空')
 
 class OutlinePage(BaseModel):
     kind: Literal['text', 'photo']
@@ -47,11 +47,11 @@ class OutlinePage(BaseModel):
     source_pages: list[int] = Field(min_length=1)
 
 class OutlinePageCompact(BaseModel):
-    kind: Literal['text', 'photo']
-    purpose: str
-    instruction: str = ''
-    visual_spec: str = ''
-    source_pages: list[int] = Field(min_length=1)
+    kind: Literal['text', 'photo'] = Field(description='页面类型：text=文字卡，photo=实拍页')
+    purpose: str = Field(description='这一页要讲什么，15字内')
+    instruction: str = Field(default='', description='制作或拍摄说明，20字内')
+    visual_spec: str = Field(default='', description='底图视觉风格描述，30字内，不提任何文字内容')
+    source_pages: list[int] = Field(min_length=1, description='借鉴的原帖页码数组')
 
     @field_validator('kind', mode='before')
     @classmethod
@@ -133,11 +133,11 @@ class AnalysisCompact(BaseModel):
             data['original_pages'] = fixed
         return data
 
-    summary: str
-    original_pages: list[ObservedPageCompact]
-    borrow: list[str] = Field(default_factory=list)
-    missing_information: list[str] = Field(default_factory=list)
-    outline: list[OutlinePageCompact] = Field(min_length=1, max_length=8)
+    summary: str = Field(description='概括原帖讲了什么、用什么形式，40字内')
+    original_pages: list[ObservedPageCompact] = Field(description='逐页观察，每张原图一条')
+    borrow: list[str] = Field(default_factory=list, description='整体可借鉴的组织方式列表')
+    missing_information: list[str] = Field(default_factory=list, description='缺少依据、需要门店补充的事实')
+    outline: list[OutlinePageCompact] = Field(min_length=1, max_length=8, description='新内容的逐页大纲')
 
     def to_analysis(self) -> Analysis:
         clip = lambda s, n: (s or '').strip()[:n]

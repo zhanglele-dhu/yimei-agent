@@ -89,7 +89,7 @@ def _trace_fields(provider, system, prompt, parsed, images):
 
 
 def generate(schema, task, sources, images=None):
-    """文字轨：DeepSeek，纯文本输入。"""
+    """文字轨：DeepSeek，纯文本输入。带单次自修复（偶发复读/格式坏时重修一次）。"""
     prompt = json.dumps({'task': task, 'sources': sources, 'schema': schema.model_json_schema()}, ensure_ascii=False)
     from openai import OpenAI
     if not os.getenv('DEEPSEEK_API_KEY'):
@@ -98,7 +98,12 @@ def generate(schema, task, sources, images=None):
                     timeout=120, max_retries=0).chat.completions.create(
         model=os.getenv('STUDIO_MODEL', 'deepseek-chat'), max_tokens=5000,
         messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}])
-    parsed = _parse(schema, result.choices[0].message.content or '')
+    raw = result.choices[0].message.content or ''
+    try:
+        parsed = _parse(schema, raw)
+    except Exception:
+        fixed = _repair_json(raw, '输出不是符合schema的JSON：可能复述了资料或缺少字段，请按schema输出分析本身')
+        parsed = _parse(schema, fixed)
     return parsed, _trace_fields('deepseek', SYSTEM_PROMPT, prompt, parsed, [])
 
 
@@ -139,7 +144,8 @@ def generate_vision(schema, task, sources, images):
 
 
 def _mini_example(schema):
-    """按 schema 生成最小填写示例（示例值），供 GLM-4V 照葫芦画瓢。"""
+    """按 schema 生成最小填写示例。占位值写成指令式描述——弱模型照抄也不会产生垃圾内容。"""
+
     def fill(prop, depth=0):
         t = prop.get('type')
         if prop.get('enum'):
@@ -153,8 +159,8 @@ def _mini_example(schema):
             if depth >= 3:
                 return '…'
             return {k: fill(sp, depth + 1) for k, sp in prop.get('properties', {}).items()}
-        limit = prop.get('maxLength')
-        return ('示例：' + prop.get('title', ''))[: limit or 60] if limit else '示例：' + prop.get('title', '文本')
+        return (prop.get('description') or prop.get('title') or '根据参考图填写').strip()
+
     props = schema.model_json_schema().get('properties', {})
     return {k: fill(sp) for k, sp in props.items()}
 
