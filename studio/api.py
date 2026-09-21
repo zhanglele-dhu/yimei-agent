@@ -178,7 +178,7 @@ def analyze(task_id:str,body:Revision):
     # Only reference images, never user photos, may be sent for optional visual analysis.
     if llm.supports_vision():
         images=[{'number':p['number'],'data':cases.image_bytes(BUNDLES,task['request']['bundle_id'],task['case']['id'],p['number'])} for p in pages]
-    result=invoke(task,Analysis,{'action':'逐页拆解原帖，区分原帖观察、可借鉴组织方式与新内容大纲。original_pages必须每原图一条，number按原序；ocr_quote逐字摘取本页OCR，缺字留空。无视觉输入时form注明仅按OCR推测，不能判断配色或布局。outline允许text纯文字卡或photo真实照片，每页附source_pages来源页码；不要为了凑图强迫实拍。不给未经核实的医学答案，只列缺少哪些事实。',
+    result=invoke(task,Analysis,{'action':'逐页拆解原帖，区分原帖观察、可借鉴组织方式与新内容大纲。original_pages必须每原图一条，number按原序；ocr_quote逐字摘取本页OCR，缺字留空。无视觉输入时form注明仅按OCR推测，不能判断配色或布局。outline按帖子结构搭配页面类型：默认门店具备实拍条件，第一页优先文字卡作封面总领，中间按内容安排实拍页（instruction写清建议拍摄的对象与要点，供门店照着拍）或文字卡（清单、对比、说明），最后可安排引导页；避免所有页面同一类型。仅当资料明确说明无法拍摄时才全文字卡。每页附source_pages来源页码，不为凑图虚构必须实拍的画面。不给未经核实的医学答案，只列缺少哪些事实。',
         'request':task['request'],'visual_input':bool(images)},images=images)
     validate_analysis(result,task)
     stages={name:{'status':'ready'} for name in ANALYSIS_STAGES}
