@@ -569,7 +569,6 @@ async function renderStageFlow(parent) {
     return;
   }
   if (current === 'retrieval') {
-    sourceCard(box);
     box.append(el('p', task.selection.reason + ' 共 ' + task.selection.eligible_count + ' 篇相关候选，当前展示点赞快照最高的一篇。', 'muted'));
     const candidates = task.selection.candidate_ids || [];
     if (candidates.length) box.append(el('p', '候选编号：' + candidates.join('、'), 'source-link'));
@@ -655,6 +654,19 @@ async function renderModes() {
   } else if (task.draft) {
     main.append(el('div', '草稿已生成，进入逐页共创。', 'future-box'));
     main.append(button('进入共创', async () => { screenId = 'create'; await render(); }));
+    main.append(button('重新生成草稿（按已确认大纲重写）', async () => {
+      if (!window.confirm('重新生成会替换当前草稿和已制作的页面图片，确定？')) return;
+      await generateDraft();
+    }, 'btn quiet'));
+    main.append(button('再来一条新内容', async () => {
+      task = null;
+      sessionStorage.removeItem('studio_task');
+      chosenStrategy = '';
+      strategyChosen = false;
+      autoStarted = false;
+      go('topics');
+      await render();
+    }, 'btn quiet'));
   } else if (task.confirmed_analysis) {
     main.append(el('h3', '拆解已确认'));
     task.confirmed_analysis.outline.forEach((item, index) => main.append(el('p', String(index + 1) + '. ' + (item.kind === 'text' ? '文字卡' : '实拍页') + '：' + item.purpose)));
@@ -921,7 +933,7 @@ async function renderHome() {
   screen.append(hero);
   if (token) {
     const library = el('details');
-    library.open = false;
+    library.open = true;
     library.append(el('summary', '案例资料管理'), el('p', '导入 xhs 导出的案例 ZIP。资料包只读保存，任务会记录使用的版本。', 'muted'));
     const file = el('input');
     file.type = 'file';
@@ -1037,6 +1049,13 @@ async function submitFeedback() {
 }
 
 document.getElementById('connectBtn').addEventListener('click', openAccess);
+document.getElementById('libraryBtn').addEventListener('click', async () => {
+  if (!token) { openAccess(); return; }
+  screenId = 'home';
+  await render();
+  const library = document.querySelector('#home details');
+  if (library) { library.open = true; library.scrollIntoView({ behavior: 'smooth', block: 'start' }); }
+});
 document.getElementById('closeAccess').addEventListener('click', closeAccess);
 document.getElementById('saveAccess').addEventListener('click', () => run(() => connectWith($('accessToken').value)));
 $('accessModal').addEventListener('click', event => { if (event.target === $('accessModal')) closeAccess(); });

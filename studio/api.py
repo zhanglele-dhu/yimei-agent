@@ -25,7 +25,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20260916-3'
+VERSION='cases-20260920-1'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 if len(TOKEN)<24:raise RuntimeError('请使用启动脚本，或配置至少24字符的STUDIO_ACCESS_TOKEN')
 Image.MAX_IMAGE_PIXELS=16_000_000
