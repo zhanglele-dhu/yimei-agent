@@ -40,10 +40,36 @@ def supports_vision():
 
 
 def _parse(schema, raw):
+    # 剥掉 markdown 代码块围栏与前后杂文字，取首个{ 到末个}
+    raw = raw.strip()
+    if raw.startswith('```'):
+        raw = raw[raw.index('\n') + 1:] if '\n' in raw else raw
+        if raw.rstrip().endswith('```'):
+            raw = raw.rstrip()[:-3]
     start, end = raw.find('{'), raw.rfind('}') + 1
     if start < 0 or end <= start:
         raise ValueError('模型未返回JSON')
     return schema.model_validate_json(raw[start:end])
+
+
+def _repair_json(broken: str, parse_error: str) -> str:
+    """单次跨模型修复：GLM 的残缺 JSON 交给文字轨（DeepSeek）修一次，只修格式不改内容。"""
+    from openai import OpenAI
+    if not os.getenv('DEEPSEEK_API_KEY'):
+        raise ValueError(broken)
+    result = OpenAI(api_key=os.environ['DEEPSEEK_API_KEY'], base_url='https://api.deepseek.com',
+                    timeout=120, max_retries=0).chat.completions.create(
+        model=os.getenv('STUDIO_MODEL', 'deepseek-chat'), max_tokens=2048,
+        messages=[{'role': 'system', 'content':
+                   '只输出修复后的合法JSON，不输出任何其他内容。'
+                   '允许修正结构与类型错误：把表示范围的字符串改为整数数组（"1-3"改[1,2,3]）、'
+                   '把null字段依据上下文补成合理内容、kind字段只能用"text"或"photo"、'
+                   '字符串列表的元素只能是字符串、补齐缺失的必备字段。'
+                   '若 outline 缺失或为空数组，可依据 summary 与 original_pages 中已有的观察'
+                   '拟一份1-6页的outline（每页含kind/purpose/instruction/source_pages），'
+                   '只重组已有信息，不新增医学结论。'},
+                  {'role': 'user', 'content': f'以下JSON有问题（{parse_error[:300]}），修复它：\n\n{broken[:6000]}'}])
+    return result.choices[0].message.content or ''
 
 
 def _image_b64(data):
@@ -77,20 +103,60 @@ def generate(schema, task, sources, images=None):
 
 
 def generate_vision(schema, task, sources, images):
-    """视觉轨：智谱 GLM-4V，参考图+文字输入。images: [{'number': int, 'data': bytes}]"""
+    """视觉轨：智谱 GLM-4V，参考图+文字输入。images: [{'number': int, 'data': bytes}]
+    注意：GLM-4V 的 max_tokens 上限 2048，调用方应传 *Compact 系列瘦身 schema。"""
     if not _vision_enabled():
         raise RuntimeError('视觉轨未配置（需要 VISION_PROVIDER=glm 和 VISION_API_KEY）')
     from openai import OpenAI
-    prompt = json.dumps({'task': task, 'sources': sources, 'schema': schema.model_json_schema()}, ensure_ascii=False)
+    # GLM-4V 指令遵循较弱：不投喂 schema 定义（会诱发逐字回显），改用"示例教学法"——
+    # 只给一个同结构的已填示例，要求替换示例值为真实分析。示例即结构，一石二鸟。
+    example = _mini_example(schema)
+    prompt = (
+        '观察参考图，参照下面这个JSON示例的结构填写真实分析：'
+        '保持所有字段名和嵌套结构完全一致，把示例值全部替换成你从图中看到的内容。'
+        '必须用简体中文。每个original_pages元素必须包含 number/form/observation/borrow 字段；'
+        '每个outline元素必须包含 kind/purpose/instruction/source_pages 字段。'
+        '每个字段值尽量不超过40个汉字。'
+        '只输出一个JSON对象：以{开头以}结尾，不要```代码块，不要输出本段文字、schema定义或任何解释。\n'
+        f'【任务与资料】{json.dumps({"task": task, "sources": sources}, ensure_ascii=False)[:6000]}\n'
+        f'【结构示例（内容需替换为真实分析）】{json.dumps(example, ensure_ascii=False)}'
+    )
     content = [{'type': 'image_url', 'image_url': {'url': f"data:image/jpeg;base64,{_image_b64(img['data'])}"}}
                for img in images]
     content.append({'type': 'text', 'text': prompt})
     result = OpenAI(api_key=os.environ['VISION_API_KEY'], base_url='https://open.bigmodel.cn/api/paas/v4',
                     timeout=180, max_retries=0).chat.completions.create(
-        model=os.getenv('STUDIO_VISION_MODEL', 'glm-4v-plus'), max_tokens=5000,
+        model=os.getenv('STUDIO_VISION_MODEL', 'glm-4v-plus'), max_tokens=2048,
         messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': content}])
-    parsed = _parse(schema, result.choices[0].message.content or '')
+    raw = result.choices[0].message.content or ''
+    try:
+        parsed = _parse(schema, raw)
+    except Exception as first_error:
+        # 单次修复：JSON 语法残缺时交给文字轨修一次（不循环）；仍失败才向上抛
+        fixed = _repair_json(raw, str(first_error))
+        parsed = _parse(schema, fixed)
     return parsed, _trace_fields('glm-vision', SYSTEM_PROMPT, prompt, parsed, images)
+
+
+def _mini_example(schema):
+    """按 schema 生成最小填写示例（示例值），供 GLM-4V 照葫芦画瓢。"""
+    def fill(prop, depth=0):
+        t = prop.get('type')
+        if prop.get('enum'):
+            return prop['enum'][0]
+        if t == 'integer':
+            return 1
+        if t == 'array':
+            item = fill(prop.get('items', {}), depth + 1) if depth < 3 else '…'
+            return [item]
+        if t == 'object':
+            if depth >= 3:
+                return '…'
+            return {k: fill(sp, depth + 1) for k, sp in prop.get('properties', {}).items()}
+        limit = prop.get('maxLength')
+        return ('示例：' + prop.get('title', ''))[: limit or 60] if limit else '示例：' + prop.get('title', '文本')
+    props = schema.model_json_schema().get('properties', {})
+    return {k: fill(sp) for k, sp in props.items()}
 
 
 def generate_background(prompt_cn):

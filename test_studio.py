@@ -12,10 +12,14 @@ from unittest.mock import patch
 TEMP=tempfile.TemporaryDirectory()
 os.environ['STUDIO_DATA_DIR']=TEMP.name
 os.environ['STUDIO_ACCESS_TOKEN']='test-only-access-key-not-for-production'
+# 测试隔离：离线测试默认关闭视觉轨（本机 .env 可能已配置真实 key，
+# 不关闭会让未 mock 的视觉调用打到真实 API，慢、花钱、结果不确定）。
+# 视觉相关用例自行用 patch.dict(os.environ, ...) 打开。
+os.environ['VISION_PROVIDER']=''
 from fastapi.testclient import TestClient
 from PIL import Image,ImageChops
 from studio import api,cases,rendering
-from studio.models import Analysis,Draft,FeedbackAnalysis,CaseRanking
+from studio.models import Analysis,AnalysisCompact,Draft,FeedbackAnalysis,CaseRanking
 
 
 def picture():
@@ -42,14 +46,15 @@ def bundle(missing=False,case_empty=False):
 
 
 def fake_generate(schema,instruction,sources,images=None):
-    if schema is Analysis:
+    if schema in (Analysis,AnalysisCompact):
         c=next(s['content'] for s in sources if s['id']=='CASE')
-        result=Analysis(summary='原帖用固定字段比较，新内容借鉴组织顺序。',
+        data=dict(summary='原帖用固定字段比较，新内容借鉴组织顺序。',
             original_pages=[{'number':p['number'],'form':'仅按OCR推测为对比文字','observation':'有对比问句',
                              'ocr_quote':p['ocr'][:8],'borrow':'固定比较维度','uncertainty':'布局需对照原图'} for p in c['pages']],
             borrow=['从同一问题展开'],missing_information=[],
-            outline=[{'kind':'text','purpose':'封面问题','instruction':'制作文字封面','source_pages':[1]},
-                     {'kind':'text','purpose':'三个确认问题','instruction':'制作问题清单','source_pages':[1]}])
+            outline=[{'kind':'text','purpose':'封面问题','instruction':'制作文字封面','visual_spec':'简洁浅色底','source_pages':[1]},
+                     {'kind':'text','purpose':'三个确认问题','instruction':'制作问题清单','visual_spec':'编号列表样式','source_pages':[1]}])
+        result=schema.model_validate(data)
     elif schema is Draft:
         result=Draft(title='第一次了解M22，先确认这些信息',body='先确认设备名称，再核对资料出处。',
             pages=[{'number':i+1,'title':'了解M22' if i==0 else '先确认的信息','text':'名称、资料与咨询问题。',

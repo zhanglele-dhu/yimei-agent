@@ -18,7 +18,7 @@ from PIL import Image, UnidentifiedImageError
 from . import cases, llm, rendering
 from .models import (CreateTask, Revision, Analysis, AnalysisConfirmation, Draft, PageEdit,
                      CopyEdit, Progress, FeedbackInput, FeedbackAnalysis, AnalysisStageDecision,
-                     CaseRanking, VisionRelevance)
+                     CaseRanking, VisionRelevance, AnalysisCompact)
 
 ROOT=Path(__file__).resolve().parents[1]
 load_dotenv(ROOT/'.env',override=False)
@@ -101,6 +101,7 @@ def invoke(task,schema,instruction,images=None):
             result,trace=llm.generate(schema,instruction,sources)
     except Exception as exc:
         task.setdefault('failures',[]).append({'action':schema.__name__,'error_type':type(exc).__name__,
+                                               'detail':str(exc)[:300],
                                                'time':datetime.now(timezone.utc).isoformat()})
         save(task,task['revision'])
         raise HTTPException(502,'模型未完成，本次已停止。已保存进度，请手动重试；不会自动循环调用。') from None
@@ -240,10 +241,15 @@ def analyze(task_id:str,body:Revision):
         raise HTTPException(409,'原帖缺少可分析文字，请补充OCR或正文')
     images=[]
     # Only reference images, never user photos, may be sent for optional visual analysis.
+    # 视觉轨用瘦身 schema（GLM-4V max_tokens 上限 2048，完整 Analysis 会被截断），
+    # 文字轨保持完整 Analysis；产出统一转回 Analysis 存库。
     if llm.supports_vision():
         images=[{'number':p['number'],'data':cases.image_bytes(BUNDLES,task['request']['bundle_id'],task['case']['id'],p['number'])} for p in pages]
-    result=invoke(task,Analysis,{'action':'逐页拆解原帖，区分原帖观察、可借鉴组织方式与新内容大纲。original_pages必须每原图一条，number按原序；ocr_quote逐字摘取本页OCR，缺字留空。无视觉输入时form注明仅按OCR推测，不能判断配色或布局。outline按帖子结构搭配页面类型：默认门店具备实拍条件，第一页优先文字卡作封面总领，中间按内容安排实拍页（instruction写清建议拍摄的对象与要点，供门店照着拍）或文字卡（清单、对比、说明），最后可安排引导页；避免所有页面同一类型。仅当资料明确说明无法拍摄时才全文字卡。每页附source_pages来源页码，不为凑图虚构必须实拍的画面。outline每页的visual_spec用一句中文描述该页底图应有的视觉风格与装饰元素（配色基调、图形母题、氛围，不含任何文字要求）；有视觉输入时提炼借鉴原帖的视觉语言，无视觉输入时基于内容主题谨慎建议。不给未经核实的医学答案，只列缺少哪些事实。',
+    analysis_schema = AnalysisCompact if images else Analysis
+    result=invoke(task,analysis_schema,{'action':'逐页拆解原帖，区分原帖观察、可借鉴组织方式与新内容大纲。original_pages必须每原图一条，number按原序；ocr_quote逐字摘取本页OCR，缺字留空。无视觉输入时form注明仅按OCR推测，不能判断配色或布局。outline按帖子结构搭配页面类型：默认门店具备实拍条件，第一页优先文字卡作封面总领，中间按内容安排实拍页（instruction写清建议拍摄的对象与要点，供门店照着拍）或文字卡（清单、对比、说明），最后可安排引导页；避免所有页面同一类型。仅当资料明确说明无法拍摄时才全文字卡。每页附source_pages来源页码，不为凑图虚构必须实拍的画面。outline每页的visual_spec用一句中文描述该页底图应有的视觉风格与装饰元素（配色基调、图形母题、氛围，不含任何文字要求）；有视觉输入时提炼借鉴原帖的视觉语言，无视觉输入时基于内容主题谨慎建议。不给未经核实的医学答案，只列缺少哪些事实。',
         'request':task['request'],'visual_input':bool(images)},images=images)
+    if isinstance(result,AnalysisCompact):
+        result=result.to_analysis()
     validate_analysis(result,task)
     stages={name:{'status':'ready'} for name in ANALYSIS_STAGES}
     if task.get('analysis_stages',{}).get('retrieval',{}).get('status')=='accepted':
@@ -280,13 +286,16 @@ def analysis_stage(task_id:str,body:AnalysisStageDecision):
     images=[]
     if stage=='visual' and llm.supports_vision():
         images=[{'number':p['number'],'data':cases.image_bytes(BUNDLES,task['request']['bundle_id'],task['case']['id'],p['number'])} for p in task['case']['pages']]
-    result=invoke(task,Analysis,{
+    rerun_schema = AnalysisCompact if images else Analysis
+    result=invoke(task,rerun_schema,{
         'action':'只重做当前分析步骤，不改变用户任务。当前步骤：'+stage,
         'feedback':'用户拒绝上一版结果，修改建议：'+body.feedback,
         'previous_analysis':task['analysis'],
         'request':task['request'],
         'rules':'保留未被要求修改的部分；original_pages必须逐页对应原图，OCR引文逐字来自原页；不能新增未经资料支持的医学事实。'},
         images=images)
+    if isinstance(result,AnalysisCompact):
+        result=result.to_analysis()
     validate_analysis(result,task)
     task['analysis']=result.model_dump()
     for name in ANALYSIS_STAGES[position:]:stages[name]={'status':'ready'}
