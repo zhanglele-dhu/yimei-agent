@@ -15,7 +15,7 @@ os.environ['STUDIO_ACCESS_TOKEN']='test-only-access-key-not-for-production'
 from fastapi.testclient import TestClient
 from PIL import Image,ImageChops
 from studio import api,cases,rendering
-from studio.models import Analysis,Draft,FeedbackAnalysis
+from studio.models import Analysis,Draft,FeedbackAnalysis,CaseRanking
 
 
 def picture():
@@ -54,6 +54,14 @@ def fake_generate(schema,instruction,sources,images=None):
         result=Draft(title='第一次了解M22，先确认这些信息',body='先确认设备名称，再核对资料出处。',
             pages=[{'number':i+1,'title':'了解M22' if i==0 else '先确认的信息','text':'名称、资料与咨询问题。',
                     'source_ids':['SHOP'],'pending':[]} for i,_ in enumerate(instruction['outline'])],missing_information=[])
+    elif schema is CaseRanking:
+        question=instruction.get('question','')
+        if '咖啡拉花' in question:
+            result=CaseRanking(scores=[{'case_id':'row000','relevance':2,'reason':'主题不符'},
+                                       {'case_id':'row001','relevance':1,'reason':'主题不符'}])
+        else:
+            result=CaseRanking(scores=[{'case_id':'row000','relevance':9,'reason':'直接回答该问题'},
+                                       {'case_id':'row001','relevance':5,'reason':'部分相关，可借鉴角度'}])
     else:
         result=FeedbackAnalysis(platform_quotes=[instruction['notice']],hypotheses=['仍需核实'],next_actions=['补充通知'],missing_information=[])
     return result,{'prompt':json.dumps(instruction,ensure_ascii=False),'response':result.model_dump(),'reference_image_pages':[]}
@@ -96,10 +104,17 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(script.headers['cache-control'],'no-store')
         self.assertNotIn('catch(e){}await render()',script.text)
 
-    def test_selection_and_no_match(self):
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_selection_and_no_match(self,mock):
         t=self.create();self.assertEqual(t['case']['id'],'row000');self.assertEqual(t['selection']['eligible_count'],2)
+        self.assertEqual(t['selection']['method'],'llm_relevance_plus_likes')
         t=self.create('咖啡拉花课程');self.assertEqual(t['stage'],'no_match');self.assertIsNone(t['case'])
         r=self.client.post('/api/tasks/'+t['id']+'/analyze',json={'revision':0});self.assertEqual(r.status_code,409)
+
+    def test_combine_ranking_prefers_relevance(self):
+        pool=[{'id':'a','likes':2000},{'id':'b','likes':100},{'id':'c','likes':500},{'id':'d','likes':900}]
+        ranked=cases.combine_ranking(pool,{'a':4,'b':9,'c':8,'d':3})
+        self.assertEqual([r['case']['id'] for r in ranked],['b','c','a'])
 
     @patch('studio.llm.generate',side_effect=fake_generate)
     def test_analysis_stage_gates_and_reject_reruns_current_step(self,mock):
@@ -113,7 +128,7 @@ class StudioTests(unittest.TestCase):
         t=self.post(t,'/analysis-stage',stage='visual',decision='reject',feedback='请把视觉不确定项单独列出')
         self.assertEqual(t['analysis_stages']['visual']['status'],'ready')
         self.assertEqual([d['stage'] for d in t['analysis_decisions']],['retrieval','language','visual'])
-        self.assertEqual(mock.call_count,2)
+        self.assertEqual(mock.call_count,3)
 
     def test_import_idempotent_and_malformed(self):
         r=self.client.post('/api/bundles',files={'bundle':('cases.zip',bundle(),'application/zip')})
@@ -125,7 +140,8 @@ class StudioTests(unittest.TestCase):
         with zipfile.ZipFile(b,'w') as z:z.writestr('../outside.txt','no')
         self.assertEqual(self.client.post('/api/bundles',files={'bundle':('a.zip',b.getvalue())}).status_code,422)
 
-    def test_missing_reference_image_blocks_analysis(self):
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_missing_reference_image_blocks_analysis(self,mock):
         r=self.client.post('/api/bundles',files={'bundle':('a.zip',bundle(missing=True))})
         t=self.create(bundle_id=r.json()['bundle_id'])
         with patch('studio.llm.generate') as mock:
@@ -150,7 +166,7 @@ class StudioTests(unittest.TestCase):
             self.assertTrue(evidence['copy_review']['confirmed'])
             self.assertTrue(all(v['status']=='accepted' for v in evidence['analysis_stages'].values()))
             Image.open(io.BytesIO(z.read('01.png'))).verify()
-        self.assertEqual(mock.call_count,2)
+        self.assertEqual(mock.call_count,3)
 
     @patch('studio.llm.generate',side_effect=fake_generate)
     def test_photo_pixels_unchanged(self,mock):
@@ -167,7 +183,7 @@ class StudioTests(unittest.TestCase):
     @patch('studio.llm.generate',side_effect=RuntimeError('secret-value'))
     def test_model_failure_saved_no_loop(self,mock):
         t=self.create();r=self.client.post('/api/tasks/'+t['id']+'/analyze',json={'revision':0})
-        self.assertEqual(r.status_code,502);self.assertNotIn('secret-value',r.text);self.assertEqual(mock.call_count,1)
+        self.assertEqual(r.status_code,502);self.assertNotIn('secret-value',r.text);self.assertEqual(mock.call_count,2)
         saved=self.client.get('/api/tasks/'+t['id']).json();self.assertIsNone(saved['analysis'])
         self.assertEqual(saved['stage'],'candidate');self.assertEqual(len(saved['failures']),1)
         with patch('studio.llm.generate',side_effect=fake_generate):saved=self.post(saved,'/analyze')

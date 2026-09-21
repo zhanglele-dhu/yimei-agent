@@ -17,7 +17,8 @@ from PIL import Image, UnidentifiedImageError
 
 from . import cases, llm, rendering
 from .models import (CreateTask, Revision, Analysis, AnalysisConfirmation, Draft, PageEdit,
-                     CopyEdit, Progress, FeedbackInput, FeedbackAnalysis, AnalysisStageDecision)
+                     CopyEdit, Progress, FeedbackInput, FeedbackAnalysis, AnalysisStageDecision,
+                     CaseRanking)
 
 ROOT=Path(__file__).resolve().parents[1]
 load_dotenv(ROOT/'.env',override=False)
@@ -25,7 +26,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20260920-2'
+VERSION='cases-20260920-3'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 if len(TOKEN)<24:raise RuntimeError('请使用启动脚本，或配置至少24字符的STUDIO_ACCESS_TOKEN')
 Image.MAX_IMAGE_PIXELS=16_000_000
@@ -128,11 +129,50 @@ def list_tasks():
     return [{'id':(t:=json.loads(r[0]))['id'],'project':t['request']['project'],'question':t['request']['question'],
              'stage':t['stage'],'legacy':t.get('schema_version')!=2} for r in rows]
 
+def rank_and_select(manifest, project, question, audience):
+    """模型给相关性打分，代码用收益函数排序；模型失败回退关键词规则。"""
+    pool = cases.project_gate(manifest, project)
+    if not pool:
+        return None, {'eligible_count': 0, 'reason': '没有相关案例。请修改主题或导入相关资料，不套用其他主题。'}
+    cards = [{'case_id': c['id'], 'title': c['title'], 'likes': c['likes'],
+              'cover_ocr': c['pages'][0]['ocr'][:150]} for c in pool]
+    try:
+        ranking, trace = llm.generate(CaseRanking, {
+            'action': '对每篇候选案例按"帮助回答用户问题的程度"打相关性分(1-10)。'
+                      '10=直接回答该问题；6-9=高度相关可借鉴角度；4-5=部分相关；1-3=仅主题相同但内容不相关。'
+                      '必须给每个case_id都打分，不要遗漏，不要新增清单外的编号。',
+            'question': question, 'audience': audience},
+            [{'id': 'CASELIST', 'type': '候选案例清单（标题/点赞/首图OCR摘要）', 'content': cards}])
+    except Exception:
+        selected, fallback = cases.select(manifest, project, question)
+        if selected:
+            fallback['reason'] = '模型打分未完成，已回退关键词规则：' + fallback['reason']
+        return selected, fallback
+    scores = {item.case_id: item.relevance for item in ranking.scores}
+    ranked = cases.combine_ranking(pool, scores)
+    if not ranked:
+        selected, fallback = cases.select(manifest, project, question)
+        if selected:
+            fallback['reason'] = '模型判定全部候选相关性不足，已回退关键词规则：' + fallback['reason']
+        return selected, fallback
+    top = ranked[0]
+    top3 = ', '.join(f"{item['case']['id']}(相关{item['relevance']}·{item['case']['likes']}赞·综合{item['final']})" for item in ranked[:3])
+    selection = {
+        'eligible_count': len(pool),
+        'reason': f"AI 相关性评分 {top['relevance']}/10 + 点赞加成，综合分 {top['final']}（{len(ranked)}/{len(pool)} 篇通过相关性≥4）。前三：{top3}",
+        'metric': '综合分=相关性×7+点赞归一化×30，相关性≤3淘汰；相关性由模型判断，排序由代码计算',
+        'candidate_ids': [item['case']['id'] for item in ranked],
+        'method': 'llm_relevance_plus_likes',
+        'scores': [{'case_id': item['case']['id'], 'relevance': item['relevance'], 'final': item['final']} for item in ranked],
+    }
+    return top['case'], selection
+
+
 @app.post('/api/tasks',dependencies=[Depends(auth)])
 def create(body: CreateTask):
     try:m=cases.load(BUNDLES,body.bundle_id)
     except (ValueError,FileNotFoundError):raise HTTPException(422,'请先导入并选择案例资料包') from None
-    selected,selection=cases.select(m,body.project,body.question)
+    selected,selection=rank_and_select(m,body.project,body.question,body.audience)
     task={'schema_version':2,'id':uuid4().hex,'revision':0,'request':body.model_dump(),
           'case':selected,'selection':selection,'stage':'candidate' if selected else 'no_match',
           'analysis':None,'confirmed_analysis':None,'draft':None,'assets':{},'renders':{},'page_reviews':{},

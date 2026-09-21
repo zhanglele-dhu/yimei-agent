@@ -1,6 +1,14 @@
 ﻿from typing import Literal
 from pydantic import BaseModel, Field
 
+class CaseScore(BaseModel):
+    case_id: str
+    relevance: int = Field(ge=1, le=10)
+    reason: str = Field(default='', max_length=300)
+
+class CaseRanking(BaseModel):
+    scores: list[CaseScore] = Field(min_length=1)
+
 class CreateTask(BaseModel):
     project: str = Field(min_length=1, max_length=100)
     audience: str = Field(min_length=1, max_length=300)

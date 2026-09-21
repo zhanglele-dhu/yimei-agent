@@ -104,6 +104,36 @@ ASPECTS = {
 }
 
 
+def project_gate(manifest, project):
+    """硬性主题闸门（确定性，模型不参与）：项目名必须出现在标题或首图OCR中。"""
+    project = project.lower().strip()
+    projects = ('m22', '光子', 'ipl') if 'm22' in project or '光子' in project else (project,)
+    matches = []
+    for c in manifest['cases']:
+        cover = (c['title'] + '\n' + c['pages'][0]['ocr']).lower()
+        if any(p and p in cover for p in projects) and c['likes'] is not None:
+            matches.append(c)
+    return matches
+
+
+def combine_ranking(pool, scores):
+    """收益函数（确定性）：综合分 = 相关性(1-10)×7 + 点赞归一化×30。
+    相关性≤3 淘汰；同分按点赞高者优先。模型只打分，排序由本函数计算。"""
+    if not pool:
+        return []
+    likes = [c['likes'] for c in pool]
+    lo, hi = min(likes), max(likes)
+    ranked = []
+    for c in pool:
+        rel = scores.get(c['id'])
+        if rel is None or rel <= 3:
+            continue
+        like_norm = 1.0 if hi == lo else (c['likes'] - lo) / (hi - lo)
+        ranked.append({'case': c, 'relevance': rel, 'final': round(7 * rel + 30 * like_norm, 1)})
+    ranked.sort(key=lambda item: (-item['final'], -item['case']['likes'], item['case']['id']))
+    return ranked
+
+
 def select(manifest, project, question):
     query = question.lower()
     project = project.lower().strip()
