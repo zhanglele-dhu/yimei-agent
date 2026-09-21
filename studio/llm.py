@@ -131,6 +131,13 @@ def generate_vision(schema, task, sources, images):
     from openai import OpenAI
     example = _mini_example(schema)
     example_leaves = {s for s in _leaf_strings(example) if s and s != '…'}
+    # 弱模型还会把字段名当值填（form:"number"），字段名集合一并纳入清洗名单
+    schema_json = schema.model_json_schema()
+    key_names = set()
+    for prop in (schema_json.get('properties') or {}).values():
+        key_names.add(prop.get('title', '').lower())
+        for sub in (prop.get('items', {}).get('properties') or {}).values():
+            key_names.add(sub.get('title', '').lower())
     prompt = (
         '观察参考图，参照下面这个JSON示例的结构填写真实分析：'
         '保持所有字段名和嵌套结构完全一致，把示例值全部替换成你从图中看到的内容。'
@@ -165,8 +172,10 @@ def generate_vision(schema, task, sources, images):
                 return {k: walk(v) for k, v in o.items()}
             if isinstance(o, list):
                 return [walk(x) for x in o]
-            if isinstance(o, str) and o.strip() in example_leaves:
-                return ''
+            if isinstance(o, str):
+                s = o.strip()
+                if s in example_leaves or s.lower() in key_names:
+                    return ''
             return o
 
         cleaned = walk(dump)
