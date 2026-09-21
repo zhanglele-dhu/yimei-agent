@@ -16,6 +16,19 @@ if not token_path.exists():
 os.environ.setdefault('STUDIO_ACCESS_TOKEN', token_path.read_text(encoding='utf-8').strip())
 
 if __name__ == '__main__':
+    import socket
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        probe.bind(('127.0.0.1', 8010))
+    except OSError:
+        print('端口 8010 已被占用：上一个工作台窗口还没关闭。')
+        print('请找到旧的黑色窗口点右上角 × 关闭（或在里面按 Ctrl+C），')
+        print('然后重新双击 start_studio.bat。')
+        input('按回车键关闭本窗口...')
+        raise SystemExit(1)
+    finally:
+        probe.close()
+
     import uvicorn
     print('门店拍摄与图文助手：http://127.0.0.1:8010')
     print('本机访问口令（粘贴到网页）：' + os.environ['STUDIO_ACCESS_TOKEN'])
