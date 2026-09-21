@@ -108,6 +108,8 @@ class StudioTests(unittest.TestCase):
     def test_selection_and_no_match(self,mock):
         t=self.create();self.assertEqual(t['case']['id'],'row000');self.assertEqual(t['selection']['eligible_count'],2)
         self.assertEqual(t['selection']['method'],'llm_relevance_plus_likes')
+        self.assertIn('相关度',t['selection']['reason']);self.assertIn('M22仪器对比',t['selection']['reason'])
+        self.assertEqual(t['selection']['top3'][0]['title'],'M22仪器对比')
         t=self.create('咖啡拉花课程');self.assertEqual(t['stage'],'no_match');self.assertIsNone(t['case'])
         r=self.client.post('/api/tasks/'+t['id']+'/analyze',json={'revision':0});self.assertEqual(r.status_code,409)
 

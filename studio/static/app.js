@@ -570,9 +570,17 @@ async function renderStageFlow(parent) {
   }
   if (current === 'retrieval') {
     sourceCard(box);
-    box.append(el('p', task.selection.reason + ' 共 ' + task.selection.eligible_count + ' 篇相关候选，当前展示点赞快照最高的一篇。', 'muted'));
-    const candidates = task.selection.candidate_ids || [];
-    if (candidates.length) box.append(el('p', '候选编号：' + candidates.join('、'), 'source-link'));
+    box.append(el('p', task.selection.reason, 'muted'));
+    const top3 = task.selection.top3 || [];
+    if (top3.length) {
+      const list = el('ul');
+      top3.forEach((item, index) => list.append(el('li',
+        (index + 1) + '. 《' + item.title + '》：相关度 ' + item.relevance + '/10 · ' + item.likes + ' 赞 · 综合 ' + item.final + ' 分')));
+      box.append(el('p', '评分前三的候选（当前采用第 1 名）：'), list);
+      box.append(el('p', '综合分 = 相关度 × 7 + 点赞加成（满分30）；相关度低于 4 分的候选已被排除。完整名单保留在导出包的来源记录里。', 'step-state'));
+    } else {
+      box.append(el('p', '共 ' + task.selection.eligible_count + ' 篇相关候选。', 'muted'));
+    }
     stageDecisionBox(box, current);
   } else if (current === 'language') {
     renderLanguageStage(box);

@@ -26,7 +26,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20260920-3'
+VERSION='cases-20260920-4'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 if len(TOKEN)<24:raise RuntimeError('请使用启动脚本，或配置至少24字符的STUDIO_ACCESS_TOKEN')
 Image.MAX_IMAGE_PIXELS=16_000_000
@@ -156,14 +156,18 @@ def rank_and_select(manifest, project, question, audience):
             fallback['reason'] = '模型判定全部候选相关性不足，已回退关键词规则：' + fallback['reason']
         return selected, fallback
     top = ranked[0]
-    top3 = ', '.join(f"{item['case']['id']}(相关{item['relevance']}·{item['case']['likes']}赞·综合{item['final']})" for item in ranked[:3])
+    top3 = [{'title': item['case']['title'], 'likes': item['case']['likes'],
+             'relevance': item['relevance'], 'final': item['final']} for item in ranked[:3]]
     selection = {
         'eligible_count': len(pool),
-        'reason': f"AI 相关性评分 {top['relevance']}/10 + 点赞加成，综合分 {top['final']}（{len(ranked)}/{len(pool)} 篇通过相关性≥4）。前三：{top3}",
+        'reason': f"AI 读完 {len(pool)} 篇候选，认为《{top['case']['title']}》最能回答你的问题"
+                  f"（相关度 {top['relevance']}/10，{top['case']['likes']} 赞）。"
+                  f"点赞不是唯一标准：相关度不够的帖子再热门也不会被选中。",
         'metric': '综合分=相关性×7+点赞归一化×30，相关性≤3淘汰；相关性由模型判断，排序由代码计算',
         'candidate_ids': [item['case']['id'] for item in ranked],
         'method': 'llm_relevance_plus_likes',
         'scores': [{'case_id': item['case']['id'], 'relevance': item['relevance'], 'final': item['final']} for item in ranked],
+        'top3': top3,
     }
     return top['case'], selection
 

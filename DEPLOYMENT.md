@@ -35,6 +35,6 @@ Dockerfile使用requirements-studio.lock.txt及当前studio、knowledge。配置
 
 刷新后恢复最近任务，或从任务列表选择。仅已保存内容持久化在SQLite，照片和输出文件也必须一起备份。模型失败不自动循环调用，显示错误后手动重试；原任务不丢失。
 
-更新后先关闭旧启动窗口，再双击start_studio.bat。healthz应返回版本`cases-20260920-3`。启动器只在版本匹配时自动打开页面；不强制结束其他进程。
+更新后先关闭旧启动窗口，再双击start_studio.bat。healthz应返回版本`cases-20260920-4`。启动器只在版本匹配时自动打开页面；不强制结束其他进程。
 
 2026-09-17已真实调用DeepSeek跑通一条示例，完整运行证据在`outputs/studio/evidence/RUN-20260917_M22_demo/`。当前没有可用浏览器自动化界面，浏览器刷新/点击的实际体验仍待验收；API持久化与恢复已测。容器尚未构建验证。
