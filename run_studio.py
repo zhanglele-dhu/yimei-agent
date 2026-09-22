@@ -21,9 +21,23 @@ if __name__ == '__main__':
     try:
         probe.bind(('127.0.0.1', 8010))
     except OSError:
-        print('端口 8010 已被占用：上一个工作台窗口还没关闭。')
-        print('请找到旧的黑色窗口点右上角 × 关闭（或在里面按 Ctrl+C），')
-        print('然后重新双击 start_studio.bat。')
+        # 端口被占：如果是本工作台已在运行（healthz 可识别），直接打开页面即可
+        import json as _json
+        try:
+            with urllib.request.urlopen('http://127.0.0.1:8010/healthz', timeout=2) as resp:
+                info = _json.load(resp)
+            if resp.status == 200 and str(info.get('version', '')).startswith('cases-'):
+                print('工作台已经在运行了，无需重复启动，直接为你打开页面。')
+                opened = webbrowser.open(
+                    'http://127.0.0.1:8010/?v=' + str(info['version']) + '#token=' + os.environ['STUDIO_ACCESS_TOKEN'])
+                if not opened:
+                    print('请手动在浏览器打开：http://127.0.0.1:8010')
+                input('按回车键关闭本窗口...')
+                raise SystemExit(0)
+        except Exception:
+            pass
+        print('端口 8010 被其他程序占用，且不是本工作台。')
+        print('请关闭占用该端口的程序后重新双击 start_studio.bat。')
         input('按回车键关闭本窗口...')
         raise SystemExit(1)
     finally:
