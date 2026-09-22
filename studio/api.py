@@ -263,7 +263,9 @@ def analyze(task_id:str,body:Revision):
     if llm.supports_vision():
         images=[{'number':p['number'],'data':cases.image_bytes(BUNDLES,task['request']['bundle_id'],task['case']['id'],p['number'])} for p in pages]
     analysis_schema = AnalysisCompact if images else Analysis
-    result=invoke(task,analysis_schema,{'action':'逐页拆解原帖，区分原帖观察、可借鉴组织方式与新内容大纲。original_pages必须每原图一条，number按原序；ocr_quote逐字摘取本页OCR，缺字留空。无视觉输入时form注明仅按OCR推测，不能判断配色或布局。outline按帖子结构搭配页面类型：默认门店具备实拍条件，第一页优先文字卡作封面总领，中间按内容安排实拍页（instruction写清建议拍摄的对象与要点，供门店照着拍）或文字卡（清单、对比、说明），最后可安排引导页；避免所有页面同一类型。仅当资料明确说明无法拍摄时才全文字卡。每页附source_pages来源页码，不为凑图虚构必须实拍的画面。outline每页的visual_spec用一句中文描述该页底图应有的视觉风格与装饰元素（配色基调、图形母题、氛围，不含任何文字要求）；有视觉输入时提炼借鉴原帖的视觉语言，无视觉输入时基于内容主题谨慎建议。不给未经核实的医学答案，只列缺少哪些事实。',
+    anchor = ('outline页数以原帖为锚点：本帖共' + str(len(pages)) + '页，新大纲默认与其接近（±1页内），'
+              '仅当用户问题确实需要更丰富结构时才增加，并在summary末尾用一句话说明增页理由；禁止无依据地铺页数。')
+    result=invoke(task,analysis_schema,{'action':'逐页拆解原帖，区分原帖观察、可借鉴组织方式与新内容大纲。original_pages必须每原图一条，number按原序；ocr_quote逐字摘取本页OCR，缺字留空。无视觉输入时form注明仅按OCR推测，不能判断配色或布局。'+anchor+'outline按帖子结构搭配页面类型：默认门店具备实拍条件，第一页优先文字卡作封面总领，中间按内容安排实拍页（instruction写清建议拍摄的对象与要点，供门店照着拍）或文字卡（清单、对比、说明），最后可安排引导页；避免所有页面同一类型。仅当资料明确说明无法拍摄时才全文字卡。每页附source_pages来源页码，不为凑图虚构必须实拍的画面。outline每页的visual_spec用一句中文描述该页底图应有的视觉风格与装饰元素（配色基调、图形母题、氛围，不含任何文字要求）；有视觉输入时提炼借鉴原帖的视觉语言，无视觉输入时基于内容主题谨慎建议。不给未经核实的医学答案，只列缺少哪些事实。',
         'request':task['request'],'visual_input':bool(images)},images=images)
     if isinstance(result,AnalysisCompact):
         result=result.to_analysis()
@@ -312,7 +314,8 @@ def analysis_stage(task_id:str,body:AnalysisStageDecision):
         'feedback':'用户拒绝上一版结果，修改建议：'+body.feedback,
         'previous_analysis':task['analysis'],
         'request':task['request'],
-        'rules':'保留未被要求修改的部分；original_pages必须逐页对应原图，OCR引文逐字来自原页；不能新增未经资料支持的医学事实。'},
+        'reference_pages':len(task['case']['pages']),
+        'rules':'保留未被要求修改的部分；original_pages必须逐页对应原图，OCR引文逐字来自原页；不能新增未经资料支持的医学事实。outline页数以原帖页数（见reference_pages）为锚点，默认±1页内，除非修改建议明确要求增减。'},
         images=images)
     if isinstance(result,AnalysisCompact):
         result=result.to_analysis()

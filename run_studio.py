@@ -15,6 +15,14 @@ if not token_path.exists():
     token_path.write_text(secrets.token_urlsafe(32), encoding='utf-8')
 os.environ.setdefault('STUDIO_ACCESS_TOKEN', token_path.read_text(encoding='utf-8').strip())
 
+def _pause():
+    """双击场景暂停窗口便于阅读；在无标准输入的环境（如后台启动）静默跳过。"""
+    try:
+        input('按回车键关闭本窗口...')
+    except EOFError:
+        pass
+
+
 if __name__ == '__main__':
     import socket
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -32,13 +40,13 @@ if __name__ == '__main__':
                     'http://127.0.0.1:8010/?v=' + str(info['version']) + '#token=' + os.environ['STUDIO_ACCESS_TOKEN'])
                 if not opened:
                     print('请手动在浏览器打开：http://127.0.0.1:8010')
-                input('按回车键关闭本窗口...')
+                _pause()
                 raise SystemExit(0)
         except Exception:
             pass
         print('端口 8010 被其他程序占用，且不是本工作台。')
         print('请关闭占用该端口的程序后重新双击 start_studio.bat。')
-        input('按回车键关闭本窗口...')
+        _pause()
         raise SystemExit(1)
     finally:
         probe.close()
