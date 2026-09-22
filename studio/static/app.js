@@ -268,6 +268,14 @@ function pipeline(parent) {
   parent.append(wrap);
 }
 
+const DEMO_SHOP_FACTS = [
+  '【门店与设备】本店为正规医美机构，配备 M22 AOPT 平台，具体滤光片配置以店内公示与医生面诊为准；治疗由持证医师操作，术前签署知情同意书。',
+  '【咨询流程】线上初步咨询 → 到店登记 → 皮肤检测 → 医生面诊评估 → 讲解适合的滤光片与方案 → 说明价格与套餐 → 预约治疗。',
+  '【顾客最常问】做一次要多久？疼不疼？要做几次？大概什么价位？有没有恢复期？多久做一次？术后怎么护肤？',
+  '【门店口径】价格以到店面诊为准；效果因人而异，不做疗效承诺；孕期、光敏体质、近期暴晒或皮肤有炎症的情况需提前告知。',
+  '【本篇要求】科普向内容，不出现具体价格数字，结尾引导顾客到店面诊咨询。（本段为示例门店资料，正式使用请替换为门店真实信息）'
+].join('\n');
+
 function setupPanel(parent) {
   const panel = el('div', undefined, 'panel');
   panel.append(el('h2', '本次主题参数'), el('p', '这些信息用于筛选相关案例，也决定 AI 可以写哪些门店事实。', 'muted'));
@@ -285,11 +293,12 @@ function setupPanel(parent) {
   const question = field(grid, '这篇想回答什么？', task?.request?.question || '第一次了解 M22，应该先问清哪些信息？');
   question.id = 'question';
   question.maxLength = 1000;
-  const facts = field(grid, '你能确认的门店事实或资料', task?.request?.facts || '');
+  const facts = field(grid, '门店事实或资料', task?.request?.facts || DEMO_SHOP_FACTS);
   facts.id = 'facts';
   facts.maxLength = 6000;
   const factsWrap = facts.closest('.field');
   if (factsWrap) factsWrap.classList.add('wide');
+  panel.append(el('p', '已预填示例门店资料（可直接用于演示），正式使用请替换为门店真实信息。', 'muted'));
   panel.append(grid);
   parent.append(panel);
   return { bundle, audience, question, facts };
