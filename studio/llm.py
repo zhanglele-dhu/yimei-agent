@@ -1,5 +1,10 @@
 """模型调用统一入口：文字轨 DeepSeek；视觉轨智谱 GLM-4V（看图）；画图轨智谱 CogView（生成底图）。
 
+三轨之外的所有模型调用都必须经过本模块，统一获得：
+  - 遥测：每次调用记录耗时(elapsed_ms)与token用量(usage)，重试链记录在 attempts；
+  - 鲁棒性：解析失败→带图自我纠正一次→跨模型修复一次，绝不无限循环；
+  - 清洗：弱模型照抄示例占位值/字段名时就地清空，不产生垃圾内容。
+
 配置（.env）：
   LLM_PROVIDER=deepseek          文字轨（当前唯一支持）
   VISION_PROVIDER=glm            视觉轨开关（留空=关闭，视觉分析自动降级为仅OCR+正文）
@@ -11,6 +16,7 @@ import base64
 import io
 import json
 import os
+import time
 from PIL import Image
 
 SYSTEM_PROMPT = (
@@ -37,6 +43,15 @@ def _vision_enabled():
 
 def supports_vision():
     return _vision_enabled()
+
+
+def _usage(result):
+    """OpenAI 兼容响应里的 token 用量；接口不给就返回空字典。"""
+    u = getattr(result, 'usage', None)
+    if u is None:
+        return {}
+    return {'prompt_tokens': getattr(u, 'prompt_tokens', 0) or 0,
+            'completion_tokens': getattr(u, 'completion_tokens', 0) or 0}
 
 
 def _parse(schema, raw):
@@ -76,12 +91,13 @@ def _repair_json(broken: str, parse_error: str, placeholders=None) -> str:
     return result.choices[0].message.content or ''
 
 
-def _image_b64(data):
+def _image_b64(data, max_side=1600, quality=85):
+    """参考图转 base64。max_side 为长边上限；多图请求传更小的值控制总载荷。"""
     with Image.open(io.BytesIO(data)) as im:
         im = im.convert('RGB')
-        im.thumbnail((1200, 1600))
+        im.thumbnail((round(max_side * .75), max_side))
         buf = io.BytesIO()
-        im.save(buf, format='JPEG', quality=85)
+        im.save(buf, format='JPEG', quality=quality)
     return base64.b64encode(buf.getvalue()).decode()
 
 
@@ -98,17 +114,25 @@ def generate(schema, task, sources, images=None):
     from openai import OpenAI
     if not os.getenv('DEEPSEEK_API_KEY'):
         raise RuntimeError('模型密钥未配置')
+    started = time.monotonic()
+    attempts = []
     result = OpenAI(api_key=os.environ['DEEPSEEK_API_KEY'], base_url='https://api.deepseek.com',
                     timeout=120, max_retries=0).chat.completions.create(
         model=os.getenv('STUDIO_MODEL', 'deepseek-chat'), max_tokens=5000,
         messages=[{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': prompt}])
+    usage = _usage(result)
     raw = result.choices[0].message.content or ''
     try:
         parsed = _parse(schema, raw)
+        attempts.append({'try': 1, 'provider': 'deepseek', 'outcome': 'parsed', 'usage': usage})
     except Exception:
         fixed = _repair_json(raw, '输出不是符合schema的JSON：可能复述了资料或缺少字段，请按schema输出分析本身')
         parsed = _parse(schema, fixed)
-    return parsed, _trace_fields('deepseek', SYSTEM_PROMPT, prompt, parsed, [])
+        attempts.append({'try': 1, 'provider': 'deepseek', 'outcome': 'parse_failed', 'usage': usage})
+        attempts.append({'try': 2, 'provider': 'deepseek-repair', 'outcome': 'repaired'})
+    trace = _trace_fields('deepseek', SYSTEM_PROMPT, prompt, parsed, [])
+    trace.update({'elapsed_ms': round((time.monotonic() - started) * 1000), 'usage': usage, 'attempts': attempts})
+    return parsed, trace
 
 
 def _leaf_strings(obj):
@@ -148,16 +172,28 @@ def generate_vision(schema, task, sources, images):
         f'【任务与资料】{json.dumps({"task": task, "sources": sources}, ensure_ascii=False)[:6000]}\n'
         f'【结构示例（内容需替换为真实分析）】{json.dumps(example, ensure_ascii=False)}'
     )
-    content = [{'type': 'image_url', 'image_url': {'url': f"data:image/jpeg;base64,{_image_b64(img['data'])}"}}
+    # 多图请求自适应压缩：图越多压得越小，控制请求总体积
+    many = len(images) > 8
+    side, quality = ((1200, 75) if many else (1600, 85))
+    content = [{'type': 'image_url', 'image_url': {'url': f"data:image/jpeg;base64,{_image_b64(img['data'], side, quality)}"}}
                for img in images]
     content.append({'type': 'text', 'text': prompt})
     client = OpenAI(api_key=os.environ['VISION_API_KEY'], base_url='https://open.bigmodel.cn/api/paas/v4',
                     timeout=180, max_retries=0)
     model = os.getenv('STUDIO_VISION_MODEL', 'glm-4v-plus')
     messages = [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': content}]
+    attempts = []
+    total_usage = {'prompt_tokens': 0, 'completion_tokens': 0}
 
-    result = client.chat.completions.create(model=model, max_tokens=2048, messages=messages)
-    raw = result.choices[0].message.content or ''
+    def call(msgs, outcome_label):
+        t0 = time.monotonic()
+        res = client.chat.completions.create(model=model, max_tokens=2048, messages=msgs)
+        usage = _usage(res)
+        total_usage['prompt_tokens'] += usage.get('prompt_tokens') or 0
+        total_usage['completion_tokens'] += usage.get('completion_tokens') or 0
+        attempts.append({'try': len(attempts) + 1, 'provider': 'glm-vision', 'outcome': outcome_label,
+                         'usage': usage, 'elapsed_ms': round((time.monotonic() - t0) * 1000)})
+        return res.choices[0].message.content or ''
 
     def parse_ok(text):
         """解析 + 占位符就地清除（清空而非失败：用户在确认步骤可见、可改、可退回重做）。"""
@@ -183,28 +219,28 @@ def generate_vision(schema, task, sources, images):
         parsed = schema.model_validate(cleaned)
         return (parsed, sanitized), None
 
+    raw = call(messages, 'parse')
     parsed, err = parse_ok(raw)
-    sanitized_count = 0
     if parsed is None:
         # 带图自我纠正一次：把上次的输出和错误发回去，让看过图的模型自己改
         messages = messages + [
             {'role': 'assistant', 'content': raw[:4000]},
             {'role': 'user', 'content': f'你上面的输出不合格：{str(err)[:300]}。'
              '不要复制示例值，必须替换成你从参考图中看到的真实内容，重新只输出一个JSON。'}]
-        result2 = client.chat.completions.create(model=model, max_tokens=2048, messages=messages)
-        raw2 = result2.choices[0].message.content or ''
+        raw2 = call(messages, 'self_correct')
         parsed, err2 = parse_ok(raw2)
         if parsed is None:
             # 最后一次机会：交 DeepSeek 修结构（不循环）
             fixed = _repair_json(raw2, str(err2))
+            attempts.append({'try': len(attempts) + 1, 'provider': 'deepseek-repair', 'outcome': 'cross_model_repair'})
             parsed, err3 = parse_ok(fixed)
             if parsed is None:
                 raise err3 or err2 or err
     parsed, sanitized_count = parsed
     trace = _trace_fields('glm-vision', SYSTEM_PROMPT, prompt, parsed, images)
-    trace['placeholder_sanitized'] = sanitized_count
+    trace.update({'placeholder_sanitized': sanitized_count, 'attempts': attempts, 'usage': total_usage,
+                  'elapsed_ms': sum(a.get('elapsed_ms') or 0 for a in attempts)})
     return parsed, trace
-    return parsed, _trace_fields('glm-vision', SYSTEM_PROMPT, prompt, parsed, images)
 
 
 def _mini_example(schema):

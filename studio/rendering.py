@@ -119,6 +119,7 @@ def export_zip(task, image_files):
                   'analysis_decisions':task.get('analysis_decisions',[]),
                   'confirmed_analysis':task['confirmed_analysis'],
                   'pages':task['draft']['pages'],'page_reviews':task.get('page_reviews',{}),
+                  'assets':task.get('assets',{}),
                   'backgrounds':task.get('backgrounds',{}),
                   'copy_review':task.get('copy_review'), 'sources':task.get('generation_sources',[]),
                   'limitations':'参考结构不证明爆款或医学正确；内容经用户确认，不代表平台通过。文字卡底图由CogView生成（AI生成装饰，不含文字；标题正文由程序排版叠加）。'}

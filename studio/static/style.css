@@ -27,3 +27,14 @@
 .future-box{background:#f7f7f5;border:1px dashed #c5d2ca;border-radius:10px;padding:13px;color:#71847a;font-size:12px}
 .stage-panel{margin-top:18px;padding-top:18px;border-top:1px solid #e1ebe4}.stage-panel>h3{font-size:17px;margin:0 0 12px}.stage-decision{margin-top:20px;padding-top:15px;border-top:1px solid #e1ebe4}.stage-decision .field{max-width:760px}.stage-decision .step-state{margin:9px 0}
 @media(max-width:700px){.form-grid{grid-template-columns:1fr}.form-grid .wide{grid-column:auto}.source-card{display:block}.source-card a{display:inline-block;margin-top:8px}}
+
+/* 任务列表、大纲编辑等运行时补充 */
+.task-list{max-height:420px;overflow:auto;margin-top:6px}
+.task-row{display:flex;justify-content:space-between;align-items:center;gap:12px;border:1px solid #dbe7df;border-radius:10px;padding:11px 13px;margin:8px 0;background:#fbfdfb;flex-wrap:wrap}
+.task-row .task-info{min-width:0;flex:1}
+.task-row b{font-size:13px}
+.task-row small{display:block;color:#71847a;font-size:11px;margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.task-row-actions{display:flex;gap:8px}
+.task-badge{display:inline-block;font-size:10px;color:#2e7a58;background:#e4f3e7;border-radius:15px;padding:3px 8px;margin-left:8px;vertical-align:1px}
+.task-badge.done{background:#dcefe2;color:#1f6a4b;font-weight:700}
+.anchor-warning{background:#fff4ec;border:1px solid #edc8ad;border-radius:9px;padding:10px 13px}

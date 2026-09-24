@@ -86,7 +86,12 @@ async function run(handler) {
   const controls = [...document.querySelectorAll('button')];
   const disabledBefore = controls.map(b => [b, b.disabled]);
   controls.forEach(b => { b.disabled = true; });
+  const startedAt = Date.now();
   setStatus('正在处理，请稍候。模型请求可能需要一两分钟。');
+  const ticker = window.setInterval(() => {
+    const seconds = Math.round((Date.now() - startedAt) / 1000);
+    if (seconds >= 10) setStatus('仍在处理中，已等待 ' + seconds + ' 秒。看图拆解和底图生成偏慢属正常，请勿关闭页面。');
+  }, 5000);
   try {
     await handler();
     setStatus('已保存，可检查结果后继续。');
@@ -102,6 +107,7 @@ async function run(handler) {
     }
     setStatus('未完成：' + (error.message || error) + '（已停止，不会自动重试）', true);
   } finally {
+    window.clearInterval(ticker);
     disabledBefore.forEach(([b, disabled]) => { b.disabled = disabled; });
     busy = false;
   }
@@ -166,6 +172,44 @@ async function refreshLists() {
   const result = await Promise.all([request('/tasks'), request('/bundles')]);
   tasks = result[0];
   bundles = result[1];
+}
+
+const STAGE_LABELS_FULL = {
+  candidate: '案例已选定',
+  no_match: '无相关案例',
+  analysis_review: '拆解确认中',
+  ready_to_write: '待生成草稿',
+  making: '逐页制作中',
+  ready_to_export: '已可导出'
+};
+
+function taskStageBadge(row) {
+  if (row.legacy) return '历史任务';
+  if (row.exported) return '已确认导出';
+  return STAGE_LABELS_FULL[row.stage] || '进行中';
+}
+
+async function openTask(id) {
+  task = await request('/tasks/' + id);
+  sessionStorage.setItem('studio_task', task.id);
+  chosenStrategy = sessionStorage.getItem('studio_strategy_' + task.id) || '';
+  strategyChosen = Boolean(chosenStrategy);
+  screenId = task.schema_version !== 2 ? 'modes' : (task.copy_review?.confirmed ? 'publish' : task.draft ? 'create' : 'modes');
+  await render();
+}
+
+async function deleteTask(row) {
+  const label = (row.question || '').slice(0, 30);
+  if (!window.confirm('删除后任务记录和已生成的图片都无法恢复，确定删除「' + label + '」？')) return;
+  await request('/tasks/' + row.id + '?revision=' + row.revision, 'DELETE');
+  if (task && task.id === row.id) {
+    task = null;
+    sessionStorage.removeItem('studio_task');
+    screenId = 'home';
+  }
+  await refreshLists();
+  await render();
+  showToast('任务已删除');
 }
 
 function revokeUrls() {
@@ -499,6 +543,11 @@ function renderWritingStage(parent) {
   const analysis = task.analysis;
   parent.append(el('h3', 'AI 的写作规则与逐页大纲'));
   parent.append(el('p', '这一阶段只决定组织方式，不会把参考帖医学结论直接复制到成品。', 'muted'));
+  const pageCount = task.case?.pages?.length || 0;
+  if (pageCount && Math.abs(analysis.outline.length - pageCount) > 1) {
+    parent.append(el('p', '注意：原帖共 ' + pageCount + ' 页，本大纲安排了 ' + analysis.outline.length
+      + ' 页，超出原帖页数±1的常规范围。可在下方增删页面，或退回让 AI 按原帖页数重做。', 'review anchor-warning'));
+  }
   const choices = el('div', undefined, 'choices');
   [['文字图片+少量标题+话题', '纯文字卡路线，适合暂时没有实拍素材'], ['实拍+文字介绍', '保留门店真实画面，逐页上传自己的照片'], ['混合图文', '文字封面与实拍页组合，按页确认']].forEach(([value, hint]) => {
     const choice = el('button', undefined, 'choice' + (chosenStrategy === value ? ' selected' : ''));
@@ -515,49 +564,64 @@ function renderWritingStage(parent) {
     choices.append(choice);
   });
   parent.append(choices);
+  const outlineWrap = el('div');
   const edits = [];
-  analysis.outline.forEach((outline, index) => {
+  const renumberOutline = () => {
+    let n = 0;
+    outlineWrap.querySelectorAll('article.outline-page').forEach(node => {
+      if (!node.hidden) node.querySelector('h3').textContent = '新内容第 ' + (++n) + ' 页';
+    });
+  };
+  const outlineEditor = item => {
     const box = el('article', undefined, 'outline-page');
-    box.append(el('h3', '新内容第 ' + (index + 1) + ' 页'));
+    box.append(el('h3', '新内容第 ' + (edits.length + 1) + ' 页'));
     const kind = el('select');
     [['text', '纯文字卡：直接排版'], ['photo', '实拍页：上传自己的照片']].forEach(([value, label]) => {
       const option = el('option', label);
       option.value = value;
       kind.append(option);
     });
-    kind.value = outline.kind;
+    kind.value = item.kind;
     const kindLabel = el('label', '页面类型');
     kindLabel.append(kind);
     box.append(kindLabel);
-    const purpose = field(box, '本页要讲什么', outline.purpose);
-    const instruction = field(box, '制作或拍摄说明', outline.instruction);
-    box.append(el('div', '借鉴原帖第 ' + outline.source_pages.join('、') + ' 页', 'inline-meta'));
-    const edit = { kind, purpose, instruction, removed: false };
+    const purpose = field(box, '本页要讲什么', item.purpose);
+    const instruction = field(box, '制作或拍摄说明', item.instruction);
+    box.append(el('div', '借鉴原帖第 ' + item.source_pages.join('、') + ' 页', 'inline-meta'));
+    const edit = { item, kind, purpose, instruction, removed: false };
     edits.push(edit);
     const remove = el('button', '移除这一页', 'btn danger');
     remove.addEventListener('click', () => {
-      if (edits.filter(item => !item.removed).length <= 1) {
+      if (edits.filter(e => !e.removed).length <= 1) {
         showToast('至少保留一页');
         return;
       }
       edit.removed = true;
       box.hidden = true;
+      renumberOutline();
     });
     box.append(remove);
-    parent.append(box);
+    return box;
+  };
+  analysis.outline.forEach(item => outlineWrap.append(outlineEditor(item)));
+  const addPage = el('button', '添加一页（默认文字卡）', 'btn quiet');
+  addPage.type = 'button';
+  addPage.addEventListener('click', () => {
+    outlineWrap.append(outlineEditor({ kind: 'text', purpose: '', instruction: '', visual_spec: '', source_pages: [1] }));
+    renumberOutline();
   });
+  parent.append(outlineWrap, addPage);
   if (analysis.missing_information.length) parent.append(el('p', '需要补充或回避：' + analysis.missing_information.join('；'), 'review'));
   const confirmed = check(parent, '我已对照原图检查拆解，并确认新内容大纲');
   stageDecisionBox(parent, 'writing', true, () => {
     if (!strategyChosen) throw new Error('请先选择一种创作形式');
     if (!confirmed.checked) throw new Error('请先核对并勾选确认');
+    const kept = edits.filter(e => !e.removed);
+    if (!kept.length) throw new Error('至少保留一页');
+    if (kept.length > 8) throw new Error('最多 8 页，请精简后再确认');
+    if (kept.some(e => !e.purpose.value.trim())) throw new Error('每一页都要填写"本页要讲什么"，不需要的页请移除');
     const next = JSON.parse(JSON.stringify(analysis));
-    next.outline = next.outline.map((item, index) => ({
-      ...item,
-      kind: edits[index].kind.value,
-      purpose: edits[index].purpose.value,
-      instruction: edits[index].instruction.value
-    })).filter((_, index) => !edits[index].removed);
+    next.outline = kept.map(e => ({ ...e.item, kind: e.kind.value, purpose: e.purpose.value, instruction: e.instruction.value }));
     return decideStage('writing', 'accept', '', next);
   });
 }
@@ -590,6 +654,13 @@ async function renderStageFlow(parent) {
     } else {
       box.append(el('p', '共 ' + task.selection.eligible_count + ' 篇相关候选。', 'muted'));
     }
+    box.append(button('前四步都没问题，直达第 5 步定大纲', async () => {
+      await decideStage('retrieval', 'accept', '');
+      await decideStage('language', 'accept', '');
+      await decideStage('visual', 'accept', '');
+      await decideStage('facts', 'accept', '');
+    }, 'btn quiet'));
+    box.append(el('p', '案例、语言、视觉、资料四步是逐项核对 AI 的拆解依据。都没问题时可一键采用，仍会到第 5 步由你确认大纲。', 'step-state'));
     stageDecisionBox(box, current);
   } else if (current === 'language') {
     renderLanguageStage(box);
@@ -755,6 +826,10 @@ async function renderCreate() {
   const number = index + 1;
   const outline = task.confirmed_analysis.outline[index];
   const page = pages[index];
+  if (!outline || !page) {
+    screen.append(el('div', '页面数据不完整（大纲与草稿页数不一致），请回到"创作方式"重新生成草稿。', 'empty-state'));
+    return;
+  }
   const crumb = el('div', undefined, 'crumb');
   const backModes = el('button', '创作方式');
   backModes.addEventListener('click', () => { go('modes'); render(); });
@@ -805,10 +880,10 @@ async function renderCreate() {
     uploadLabel.append(upload);
     panel.append(uploadLabel);
     const caption = field(panel, '这张照片实际展示什么？', asset?.caption || '');
-    panel.append(button('保存实拍照片', async () => {
-      if (!upload.files[0]) throw new Error('请选择照片');
+    panel.append(button(asset ? '保存照片与说明（可不重选照片）' : '保存实拍照片', async () => {
+      if (!upload.files[0] && !asset) throw new Error('请选择照片');
       const body = new FormData();
-      body.append('photo', upload.files[0]);
+      if (upload.files[0]) body.append('photo', upload.files[0]);
       body.append('caption', caption.value);
       body.append('revision', task.revision);
       task = await request('/tasks/' + task.id + '/pages/' + number + '/photo', 'POST', body);
@@ -831,9 +906,13 @@ async function renderCreate() {
   const actions = el('div', undefined, 'page-actions');
   actions.append(
     button('保存文字草稿', () => mutate('/pages/' + number, { title: pageTitle.value, text: pageText.value, confirmed: false, resolution: resolution.value }), 'btn quiet'),
-    button('确认并生成本页图片', () => {
+    button('确认并生成本页图片', async () => {
       if (!confirmed.checked) throw new Error('请先勾选文字确认');
-      return mutate('/pages/' + number, { title: pageTitle.value, text: pageText.value, confirmed: true, resolution: resolution.value });
+      await mutate('/pages/' + number, { title: pageTitle.value, text: pageText.value, confirmed: true, resolution: resolution.value });
+      const src = task.renders?.[String(number)]?.background_source;
+      if (src === 'ai_stale') showToast('底图重新生成失败，本页仍用上一张底图，可稍后再试');
+      else if (src === 'plain') showToast('AI 底图生成失败，本页用纯色底；可点“重新生成底图”再试');
+      else if (src === 'ai_new') showToast('AI 底图已生成');
     })
   );
   if (task.renders?.[String(number)]) await imageInto(panel, '/tasks/' + task.id + '/pages/' + number + '/render', '本页成品预览');
@@ -907,6 +986,15 @@ async function renderExport() {
     link.click();
     showToast('已开始下载图文包');
   }));
+  main.append(button('再来一条新内容', async () => {
+    task = null;
+    sessionStorage.removeItem('studio_task');
+    chosenStrategy = '';
+    strategyChosen = false;
+    autoStarted = false;
+    go('topics');
+    await render();
+  }, 'btn quiet'));
   const future = el('div', undefined, 'future-box');
   future.append(el('b', '小红书发布（后续接入）'), el('p', '当前 Agent 没有官方授权或发布接口，不能在这里模拟登录或声称已发布。'));
   main.append(future);
@@ -983,23 +1071,27 @@ async function renderHome() {
     if (!tasks.length) {
       resume.append(el('p', '当前还没有保存的任务。', 'muted'));
     } else {
-      const select = el('select');
-      select.append(el('option', '选择一个任务继续'));
+      const list = el('div', undefined, 'task-list');
       tasks.forEach(row => {
-        const option = el('option', (row.legacy ? '[历史] ' : '') + row.project + ' · ' + row.question);
-        option.value = row.id;
-        select.append(option);
+        const item = el('div', undefined, 'task-row');
+        const info = el('div', undefined, 'task-info');
+        const head = el('div');
+        head.append(el('b', (row.legacy ? '[历史] ' : '') + row.project));
+        const badge = el('span', taskStageBadge(row), 'task-badge');
+        if (row.exported) badge.classList.add('done');
+        head.append(badge);
+        const meta = row.updated_at ? new Date(row.updated_at).toLocaleString('zh-CN', { hour12: false }) : '';
+        info.append(head, el('small', row.question + (meta ? ' · ' + meta : '')));
+        item.append(info);
+        const actions = el('div', undefined, 'task-row-actions');
+        actions.append(
+          button('继续', () => openTask(row.id), 'btn quiet'),
+          button('删除', () => deleteTask(row), 'btn danger')
+        );
+        item.append(actions);
+        list.append(item);
       });
-      select.addEventListener('change', () => run(async () => {
-        if (!select.value) return;
-        task = await request('/tasks/' + select.value);
-        sessionStorage.setItem('studio_task', task.id);
-        chosenStrategy = sessionStorage.getItem('studio_strategy_' + task.id) || '';
-        strategyChosen = Boolean(chosenStrategy);
-        screenId = task.schema_version !== 2 ? 'modes' : (task.copy_review?.confirmed ? 'publish' : task.draft ? 'create' : 'modes');
-        await render();
-      }));
-      resume.append(select, el('p', '刷新页面后，任务仍从数据库恢复。', 'muted'));
+      resume.append(list, el('p', '刷新页面后，任务仍从数据库恢复；删除会连同图片一起清除。', 'muted'));
     }
     resume.append(button('刷新任务与案例资料', async () => {
       await refreshLists();
@@ -1096,10 +1188,8 @@ if (token) {
     const last = sessionStorage.getItem('studio_task');
     if (last) {
       try {
-        task = await request('/tasks/' + last);
-        chosenStrategy = sessionStorage.getItem('studio_strategy_' + task.id) || '';
-        strategyChosen = Boolean(chosenStrategy);
-        screenId = task.schema_version !== 2 ? 'modes' : (task.copy_review?.confirmed ? 'publish' : task.draft ? 'create' : 'modes');
+        await openTask(last);
+        return;
       } catch (_) {
         sessionStorage.removeItem('studio_task');
       }

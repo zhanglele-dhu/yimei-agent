@@ -115,6 +115,8 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(t['selection']['method'],'llm_relevance_plus_likes')
         self.assertIn('相关度',t['selection']['reason']);self.assertIn('M22仪器对比',t['selection']['reason'])
         self.assertEqual(t['selection']['top3'][0]['title'],'M22仪器对比')
+        rows=self.client.get('/api/tasks').json()
+        self.assertTrue(all(k in rows[0] for k in ('stage','revision','updated_at','exported','legacy')))
         t=self.create('咖啡拉花课程');self.assertEqual(t['stage'],'no_match');self.assertIsNone(t['case'])
         r=self.client.post('/api/tasks/'+t['id']+'/analyze',json={'revision':0});self.assertEqual(r.status_code,409)
 
@@ -134,8 +136,23 @@ class StudioTests(unittest.TestCase):
              patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}):
             t=self.post(t,'/pages/2',title=t['draft']['pages'][1]['title'],text=t['draft']['pages'][1]['text'],confirmed=True)
         self.assertEqual(t['renders']['2']['method'],'ai_background_composited')
+        self.assertEqual(t['renders']['2']['background_source'],'ai_new')
         self.assertIn('2',t['backgrounds'])
         self.assertTrue((api.DATA/'backgrounds'/t['id']/t['backgrounds']['2']['file']).exists())
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_background_regen_failure_marks_stale(self,mock):
+        t=self.ready()
+        with patch('studio.llm.generate_background',return_value=picture()),\
+             patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}):
+            t=self.post(t,'/pages/1',title='封面',text='内容',confirmed=True)
+            self.assertEqual(t['renders']['1']['background_source'],'ai_new')
+            # 用户要求重新生成但画图失败：保留旧底图继续渲染，标记 ai_stale 而非静默复用
+            with patch('studio.llm.generate_background',side_effect=RuntimeError('画图服务超时')):
+                t=self.post(t,'/pages/1',title='封面',text='内容',confirmed=True,regenerate_background=True)
+        self.assertEqual(t['renders']['1']['background_source'],'ai_stale')
+        self.assertEqual(t['renders']['1']['method'],'ai_background_composited')
+        self.assertTrue(any(f['action']=='generate_background' for f in t['failures']))
 
     @patch('studio.llm.generate',side_effect=fake_generate)
     def test_vision_analyze_uses_reference_images(self,mock):
@@ -205,12 +222,32 @@ class StudioTests(unittest.TestCase):
         t=self.ready(photo=True)
         r=self.client.post('/api/tasks/'+t['id']+'/pages/2/photo',data={'revision':t['revision'],'caption':'测试图，不冒充门店照片'},files={'photo':('photo.png',picture(),'image/png')})
         self.assertEqual(r.status_code,200,r.text);t=r.json()
+        # 已有照片时可只更新说明，不必重传文件
+        r=self.client.post('/api/tasks/'+t['id']+'/pages/2/photo',data={'revision':t['revision'],'caption':'更新后的说明'},files={})
+        self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['assets']['2']['caption'],'更新后的说明')
+        t=r.json()
         self.assertEqual(t['assets']['2']['sha256'],hashlib.sha256(picture()).hexdigest())
         t=self.make_all(t)
         raw=self.client.get('/api/tasks/'+t['id']+'/pages/2/render').content
         rendered=Image.open(io.BytesIO(raw));offset=t['renders']['2']['photo_offset_y']
         original=Image.open(io.BytesIO(picture())).convert('RGB')
         self.assertIsNone(ImageChops.difference(original,rendered.crop((0,offset,320,offset+240))).getbbox())
+        t=self.post(t,'/copy',title='主题',body='正文',confirmed=True)
+        r=self.client.get('/api/tasks/'+t['id']+'/export');self.assertEqual(r.status_code,200)
+        with zipfile.ZipFile(io.BytesIO(r.content)) as z:
+            evidence=json.loads(z.read('来源记录.json'))
+            self.assertEqual(evidence['assets']['2']['caption'],'更新后的说明')
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_delete_task_removes_row_and_files(self,mock):
+        t=self.ready(photo=True)
+        r=self.client.post('/api/tasks/'+t['id']+'/pages/2/photo',data={'revision':t['revision'],'caption':'说明'},files={'photo':('photo.png',picture(),'image/png')})
+        self.assertEqual(r.status_code,200);t=r.json()
+        self.assertTrue((api.DATA/'assets'/t['id']).exists())
+        self.assertEqual(self.client.delete('/api/tasks/'+t['id'],params={'revision':t['revision']+5}).status_code,409)
+        self.assertEqual(self.client.delete('/api/tasks/'+t['id'],params={'revision':t['revision']}).status_code,200)
+        self.assertFalse((api.DATA/'assets'/t['id']).exists())
+        self.assertEqual(self.client.get('/api/tasks/'+t['id']).status_code,404)
 
     @patch('studio.llm.generate',side_effect=RuntimeError('secret-value'))
     def test_model_failure_saved_no_loop(self,mock):

@@ -3,6 +3,7 @@ import hmac
 import io
 import json
 import os
+import shutil
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -15,7 +16,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
 
-from . import cases, llm, rendering
+from . import cases, llm, prompts, rendering
 from .models import (CreateTask, Revision, Analysis, AnalysisConfirmation, Draft, PageEdit,
                      CopyEdit, Progress, FeedbackInput, FeedbackAnalysis, AnalysisStageDecision,
                      CaseRanking, VisionRelevance, AnalysisCompact)
@@ -26,7 +27,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20260922-1'
+VERSION='cases-20260924-1'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 if len(TOKEN)<24:raise RuntimeError('请使用启动脚本，或配置至少24字符的STUDIO_ACCESS_TOKEN')
 Image.MAX_IMAGE_PIXELS=16_000_000
@@ -129,9 +130,14 @@ def bundles():
 
 @app.get('/api/tasks',dependencies=[Depends(auth)])
 def list_tasks():
+    result=[]
     with db() as conn:rows=conn.execute('SELECT body FROM tasks ORDER BY rowid DESC LIMIT 100').fetchall()
-    return [{'id':(t:=json.loads(r[0]))['id'],'project':t['request']['project'],'question':t['request']['question'],
-             'stage':t['stage'],'legacy':t.get('schema_version')!=2} for r in rows]
+    for r in rows:
+        t=json.loads(r[0])
+        result.append({'id':t['id'],'project':t['request']['project'],'question':t['request']['question'],
+                       'stage':t.get('stage',''),'legacy':t.get('schema_version')!=2,'revision':t.get('revision',0),
+                       'updated_at':t.get('updated_at',''),'exported':bool(t.get('copy_review',{}) and t['copy_review'].get('confirmed'))})
+    return result
 
 def rank_and_select(manifest, project, question, audience):
     """模型给相关性打分，代码用收益函数排序；模型失败回退关键词规则。"""
@@ -142,9 +148,7 @@ def rank_and_select(manifest, project, question, audience):
               'cover_ocr': c['pages'][0]['ocr'][:150]} for c in pool]
     try:
         ranking, trace = llm.generate(CaseRanking, {
-            'action': '对每篇候选案例按"帮助回答用户问题的程度"打相关性分(1-10)。'
-                      '10=直接回答该问题；6-9=高度相关可借鉴角度；4-5=部分相关；1-3=仅主题相同但内容不相关。'
-                      '必须给每个case_id都打分，不要遗漏，不要新增清单外的编号。',
+            'action': prompts.RANK_SCORING,
             'question': question, 'audience': audience},
             [{'id': 'CASELIST', 'type': '候选案例清单（标题/点赞/首图OCR摘要）', 'content': cards}])
     except Exception:
@@ -162,7 +166,7 @@ def rank_and_select(manifest, project, question, audience):
             try:
                 img = cases.image_bytes(BUNDLES, manifest['bundle_id'], c['id'], 1)
                 verdict, _ = llm.generate_vision(VisionRelevance,
-                    {'action': '仅凭这张首图判断：该帖能否帮助回答用户问题？输出相关度1-10（10=直接回答，4以下=仅主题相同内容无关）。'},
+                    {'action': prompts.VISION_RELEVANCE_JUDGE},
                     [{'id': 'FIRSTPAGE', 'type': '候选帖首图（文字信息不足，需看图判断）', 'content': {'title': c['title'], 'likes': c['likes']}}],
                     [{'number': 1, 'data': img}])
                 scores[c['id']] = verdict.relevance
@@ -202,6 +206,7 @@ def create(body: CreateTask):
           'case':selected,'selection':selection,'stage':'candidate' if selected else 'no_match',
           'analysis':None,'confirmed_analysis':None,'draft':None,'assets':{},'renders':{},'page_reviews':{},
           'page_index':0,'traces':[],'failures':[],'feedback':[],'history':[],
+          'updated_at':datetime.now(timezone.utc).isoformat(),
           'analysis_stages':{name:{'status':'ready' if name=='retrieval' and selected else 'blocked'} for name in ANALYSIS_STAGES},
           'analysis_decisions':[]}
     with db() as conn:conn.execute('INSERT INTO tasks VALUES (?,?,?)',(task['id'],0,json.dumps(task,ensure_ascii=False)))
@@ -209,6 +214,18 @@ def create(body: CreateTask):
 
 @app.get('/api/tasks/{task_id}',dependencies=[Depends(auth)])
 def read(task_id:str):return get_task(task_id)
+
+@app.delete('/api/tasks/{task_id}',dependencies=[Depends(auth)])
+def delete_task(task_id:str,revision:int):
+    """删除任务连同其照片、成品图、底图文件。要求 revision 匹配，防止误删别处刚更新过的任务。"""
+    task=get_task(task_id)
+    if task['revision']!=revision:raise HTTPException(409,'任务已变化，请刷新后重试')
+    with db() as conn:
+        cursor=conn.execute('DELETE FROM tasks WHERE id=? AND revision=?',(task_id,revision))
+        if cursor.rowcount!=1:raise HTTPException(409,'任务已变化，请刷新后重试')
+    for sub in ('assets','cards','backgrounds'):
+        shutil.rmtree(DATA/sub/task_id,ignore_errors=True)
+    return {'deleted':task_id}
 
 @app.get('/api/tasks/{task_id}/reference/{number}',dependencies=[Depends(auth)])
 def reference(task_id:str,number:int):
@@ -263,9 +280,7 @@ def analyze(task_id:str,body:Revision):
     if llm.supports_vision():
         images=[{'number':p['number'],'data':cases.image_bytes(BUNDLES,task['request']['bundle_id'],task['case']['id'],p['number'])} for p in pages]
     analysis_schema = AnalysisCompact if images else Analysis
-    anchor = ('outline页数以原帖为锚点：本帖共' + str(len(pages)) + '页，新大纲默认与其接近（±1页内），'
-              '仅当用户问题确实需要更丰富结构时才增加，并在summary末尾用一句话说明增页理由；禁止无依据地铺页数。')
-    result=invoke(task,analysis_schema,{'action':'逐页拆解原帖，区分原帖观察、可借鉴组织方式与新内容大纲。original_pages必须每原图一条，number按原序；ocr_quote逐字摘取本页OCR，缺字留空。无视觉输入时form注明仅按OCR推测，不能判断配色或布局。'+anchor+'outline按帖子结构搭配页面类型：默认门店具备实拍条件，第一页优先文字卡作封面总领，中间按内容安排实拍页（instruction写清建议拍摄的对象与要点，供门店照着拍）或文字卡（清单、对比、说明），最后可安排引导页；避免所有页面同一类型。仅当资料明确说明无法拍摄时才全文字卡。每页附source_pages来源页码，不为凑图虚构必须实拍的画面。outline每页的visual_spec用一句中文描述该页底图应有的视觉风格与装饰元素（配色基调、图形母题、氛围，不含任何文字要求）；有视觉输入时提炼借鉴原帖的视觉语言，无视觉输入时基于内容主题谨慎建议。不给未经核实的医学答案，只列缺少哪些事实。',
+    result=invoke(task,analysis_schema,{'action':prompts.analyze_instruction(len(pages)),
         'request':task['request'],'visual_input':bool(images)},images=images)
     if isinstance(result,AnalysisCompact):
         result=result.to_analysis()
@@ -310,8 +325,7 @@ def analysis_stage(task_id:str,body:AnalysisStageDecision):
         images=[{'number':p['number'],'data':cases.image_bytes(BUNDLES,task['request']['bundle_id'],task['case']['id'],p['number'])} for p in task['case']['pages']]
     rerun_schema = AnalysisCompact if images else Analysis
     result=invoke(task,rerun_schema,{
-        'action':'只重做当前分析步骤，不改变用户任务。当前步骤：'+stage,
-        'feedback':'用户拒绝上一版结果，修改建议：'+body.feedback,
+        'action':prompts.STAGE_RERUN.format(stage=stage,feedback=body.feedback),
         'previous_analysis':task['analysis'],
         'request':task['request'],
         'reference_pages':len(task['case']['pages']),
@@ -341,7 +355,7 @@ def confirm_analysis(task_id:str,body:AnalysisConfirmation):
 def draft(task_id:str,body:Revision):
     task=current(task_id,body.revision)
     if not task['confirmed_analysis']:raise HTTPException(409,'请先确认原帖拆解和新内容大纲')
-    result=invoke(task,Draft,{'action':'按照已确认outline逐页起草，pages数量顺序必须一致，number从1开始。文字卡不需要实拍。标题正文面向读者，不写分析报告，不插来源编号；source_ids单独记录。CASE只供结构借鉴，GUIDE只管流程，医学事实只能引用可靠资料，不能从竞品OCR抄医学答案。门店事实仅来自SHOP。缺少依据的内容不要出现在成品文字中，列入每页pending或missing_information。未知参数/价格/疗程不猜测。photo页只建议文字与拍摄内容，不声称看过照片。',
+    result=invoke(task,Draft,{'action':prompts.DRAFT,
         'request':task['request'],'outline':task['confirmed_analysis']['outline']})
     if [p.number for p in result.pages]!=list(range(1,len(task['confirmed_analysis']['outline'])+1)):
         raise HTTPException(502,'生成页数与已确认大纲不一致，请手动重试')
@@ -357,10 +371,15 @@ def page_data(task,number):
     return task['confirmed_analysis']['outline'][number-1],task['draft']['pages'][number-1]
 
 @app.post('/api/tasks/{task_id}/pages/{number}/photo',dependencies=[Depends(auth)])
-def upload(task_id:str,number:int,photo:UploadFile=File(...),caption:str=Form(...),revision:int=Form(...)):
+def upload(task_id:str,number:int,photo:UploadFile|None=File(None),caption:str=Form(...),revision:int=Form(...)):
+    """上传实拍照片；已有照片时可不传文件、只更新照片说明。"""
     task=current(task_id,revision);outline,_=page_data(task,number)
     if outline['kind']!='photo':raise HTTPException(422,'文字卡无需上传照片')
     if not caption.strip() or len(caption)>2000:raise HTTPException(422,'请填写真实照片说明，最多2000字')
+    if photo is None:
+        if not task['assets'].get(str(number)):raise HTTPException(422,'请先选择一张照片')
+        task['assets'][str(number)]['caption']=caption
+        return save(task,revision)
     raw=photo.file.read(10*1024*1024+1)
     if len(raw)>10*1024*1024:raise HTTPException(413,'照片不能超过10MB')
     try:
@@ -394,17 +413,17 @@ def make_page(task_id:str,number:int,body:PageEdit):
         raw=(DATA/'assets'/task_id/asset['file']).read_bytes()
     if outline['kind']=='text' and not (body.title.strip() or body.text.strip()):raise HTTPException(422,'文字卡不能空白')
     # 文字卡底图：AI 生成装饰底图（不含文字），生成失败自动降级纯色底，不阻断流程
+    # background_source 记录底图实际来源：ai_new=本次新生成；ai_reused=沿用已生成的；
+    # ai_stale=用户要求重新生成但失败，仍用旧图（界面要提示）；plain=纯色降级
     bg_bytes=None
+    background_source='plain' if outline['kind']=='text' else None
     if outline['kind']=='text':
         task.setdefault('backgrounds',{})
         entry=task['backgrounds'].get(str(number))
+        regenerated=False
         if body.regenerate_background or not entry:
             spec=outline.get('visual_spec','')
-            bg_prompt=('为一张小红书医美科普图文卡生成纯装饰底图，画面中绝对不要出现任何文字、字母、数字或水印。'
-                       f'风格：{spec or "极简现代医美风：浅色纯净底，细线几何装饰或柔和同色系色块"}。'
-                       '硬性构图要求：整体极简，装饰元素只允许出现在画面四角和底边，'
-                       '画面中央60%以上区域必须是干净均匀的浅色纯色留白，供后续排版文字；'
-                       '扁平几何风格。禁止：真实照片质感、花卉植物、复杂纹理、深色底、渐变噪点。')
+            bg_prompt=prompts.BACKGROUND.format(spec=spec or prompts.BACKGROUND_DEFAULT_SPEC)
             try:
                 data=llm.generate_background(bg_prompt)
                 folder=DATA/'backgrounds'/task_id;folder.mkdir(parents=True,exist_ok=True)
@@ -412,18 +431,24 @@ def make_page(task_id:str,number:int,body:PageEdit):
                 (folder/filename).write_bytes(data)
                 entry={'file':filename,'spec':spec,'generated_at':datetime.now(timezone.utc).isoformat()}
                 task['backgrounds'][str(number)]=entry
+                regenerated=True
             except Exception as exc:
-                task.setdefault('failures',[]).append({'action':'generate_background','error_type':type(exc).__name__,'time':datetime.now(timezone.utc).isoformat()})
+                task.setdefault('failures',[]).append({'action':'generate_background','error_type':type(exc).__name__,
+                                                       'detail':str(exc)[:300],
+                                                       'time':datetime.now(timezone.utc).isoformat()})
         if entry:
             bg_path=DATA/'backgrounds'/task_id/entry['file']
-            if bg_path.exists():bg_bytes=bg_path.read_bytes()
+            if bg_path.exists():
+                bg_bytes=bg_path.read_bytes()
+                background_source='ai_new' if regenerated else ('ai_stale' if body.regenerate_background else 'ai_reused')
     try:rendered,meta=rendering.render(body.title,body.text,raw,background=bg_bytes,
                                        page=number,total_pages=len(task['draft']['pages']))
     except ValueError as exc:raise HTTPException(422,str(exc)) from None
     folder=DATA/'cards'/task_id;folder.mkdir(parents=True,exist_ok=True)
     filename=f'{number:02d}_{uuid4().hex}.png';path=folder/filename;path.write_bytes(rendered)
     page.update(title=body.title,text=body.text)
-    task['renders'][str(number)]={'file':filename,'sha256':hashlib.sha256(rendered).hexdigest(),**meta}
+    task['renders'][str(number)]={'file':filename,'sha256':hashlib.sha256(rendered).hexdigest(),
+                                  'background_source':background_source,**meta}
     task['page_reviews'][str(number)]={'confirmed':True,'resolution':body.resolution,'pending_at_review':page['pending'],
                                       'time':datetime.now(timezone.utc).isoformat()}
     task.update(stage='making',copy_review=None)
@@ -483,7 +508,7 @@ def export(task_id:str):
 def feedback(task_id:str,body:FeedbackInput):
     task=get_task(task_id,True)
     if not task['draft']:raise HTTPException(409,'请先完成草稿')
-    result=invoke(task,FeedbackAnalysis,{'action':'区分平台原文与推测，不保证修改后通过。platform_quotes逐字摘自notice。',
+    result=invoke(task,FeedbackAnalysis,{'action':prompts.FEEDBACK,
                  'notice':body.notice,'posted_text':body.posted_text or task['draft']['body']})
     if any(q not in body.notice for q in result.platform_quotes):raise HTTPException(502,'平台引文不一致，请重试')
     task['feedback'].append({'input':body.model_dump(),'analysis':result.model_dump(),'status':'待人工复核，不自动更新规则'})
