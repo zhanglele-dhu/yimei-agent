@@ -12,14 +12,13 @@ from unittest.mock import patch
 
 TEMP=tempfile.TemporaryDirectory()
 os.environ['STUDIO_DATA_DIR']=TEMP.name
-os.environ['STUDIO_ACCESS_TOKEN']='test-only-access-key-not-for-production'
-# 测试隔离：离线测试默认关闭视觉轨（本机 .env 可能已配置真实 key，
+os.environ['STUDIO_ACCESS_TOKEN']='test-only-access-key-not-for-production'# 测试隔离：离线测试默认关闭视觉轨（本机 .env 可能已配置真实 key，
 # 不关闭会让未 mock 的视觉调用打到真实 API，慢、花钱、结果不确定）。
 # 视觉相关用例自行用 patch.dict(os.environ, ...) 打开。
 os.environ['VISION_PROVIDER']=''
 from fastapi.testclient import TestClient
 from PIL import Image,ImageChops
-from studio import api,cases,llm,rendering
+from studio import api,cases,llm,rendering,runlog
 from studio.models import Analysis,AnalysisCompact,Draft,FeedbackAnalysis,CaseRanking
 
 
@@ -61,7 +60,7 @@ def bundle_many_pages(count=13):
     return b.getvalue()
 
 
-def fake_generate(schema,instruction,sources,images=None):
+def fake_generate(schema,instruction,sources,images=None,outline_anchor=None):
     if schema in (Analysis,AnalysisCompact):
         c=next(s['content'] for s in sources if s['id']=='CASE')
         data=dict(summary='原帖用固定字段比较，新内容借鉴组织顺序。',
@@ -213,7 +212,7 @@ class StudioTests(unittest.TestCase):
     @patch('studio.llm.generate',side_effect=fake_generate)
     def test_vision_analyze_uses_reference_images(self,mock):
         t=self.create()
-        def vision_fake(schema,instruction,sources,images):
+        def vision_fake(schema,instruction,sources,images,outline_anchor=None):
             assert images,'视觉分析必须携带参考图'
             return fake_generate(schema,instruction,sources,images)
         with patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}),\
@@ -222,9 +221,49 @@ class StudioTests(unittest.TestCase):
         self.assertIn('原图',t['analysis_basis'])
 
     @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_polish_analysis_dedupes_and_compresses(self,mock):
+        """polish_analysis：删占位页/近重复页；超页自动压缩（mock 压缩调用）。"""
+        t=self.create()
+        from studio.models import Analysis as AModel
+        def compress(schema,instruction,sources,images=None,outline_anchor=None):
+            if schema is Analysis and instruction.get('rules'):
+                data=copy.deepcopy(instruction['previous_analysis'])
+                data['outline']=data['outline'][:2]
+                return Analysis.model_validate(data),{'prompt':'x','response':{},'reference_image_pages':[]}
+            return fake_generate(schema,instruction,sources,images)
+        task_obj=api.get_task(t['id'],True)
+        pages_count=len(task_obj['case']['pages'])
+        analysis=task_obj['analysis'] or {'original_pages':[{'number':1,'form':'x','observation':'y','borrow':'b'}]}
+        bad=AModel.model_validate({'summary':'s','original_pages':analysis['original_pages'],'borrow':[],
+                                   'missing_information':[],'outline':[
+              {'kind':'text','purpose':'封面总领','instruction':'制作封面','visual_spec':'','source_pages':[1]},
+              {'kind':'text','purpose':'根据参考图填写','instruction':'填写','visual_spec':'','source_pages':[1]},
+              {'kind':'text','purpose':'问题清单','instruction':'列出问题','visual_spec':'','source_pages':[1]},
+              {'kind':'text','purpose':'继续问题清单','instruction':'列出问题','visual_spec':'','source_pages':[1]}]})
+        with patch('studio.llm.generate',side_effect=compress):
+            polished,notes=api.polish_analysis(task_obj,bad,pages_count)
+        self.assertEqual(len(polished.outline),2)          # 占位页+重复页已删，2<=1+1 合规，无需再压缩
+        self.assertTrue(any('占位页' in n for n in notes))
+        self.assertTrue(any('重复页' in n for n in notes))
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_runlog_written_for_task_lifecycle(self,mock):
+        t=self.make_all(self.ready())
+        self.post(t,'/copy',title=t['draft']['title'],body=t['draft']['body'],confirmed=True)
+        r=self.client.get('/api/tasks/'+t['id']+'/export')
+        self.assertEqual(r.status_code,200)
+        logdir=api.DATA/'runlogs'
+        mine=list(logdir.glob('*'+t['id'][:8]+'*.md'))
+        self.assertEqual(len(mine),1)
+        content=mine[0].read_text(encoding='utf-8')
+        for frag in ('创建任务','拆解','生成逐页草稿','导出图文包','问题：'):
+            self.assertIn(frag,content)
+        self.assertIn(t['id'][:8],mine[0].name)
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
     def test_vision_failure_falls_back_to_text_track(self,mock):
         t=self.create()
-        def vision_fail(schema,instruction,sources,images):
+        def vision_fail(schema,instruction,sources,images,outline_anchor=None):
             raise RuntimeError('视觉模型输出质量不合格')
         with patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}),\
              patch('studio.llm.generate_vision',side_effect=vision_fail):
@@ -385,7 +424,7 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(self.client.post('/api/tasks/'+t['id']+'/confirm-analysis',json={'revision':t['revision'],'analysis':bad}).status_code,422)
 
     def test_missing_facts_require_resolution(self):
-        def pending(schema,instruction,sources,images=None):
+        def pending(schema,instruction,sources,images=None,outline_anchor=None):
             result,trace=fake_generate(schema,instruction,sources,images)
             if schema is Draft:
                 result.pages[0].pending=['型号资料未核实'];result.missing_information=['不具备治疗参数依据']

@@ -69,8 +69,10 @@ def _parse(schema, raw):
     return schema.model_validate_json(raw[start:end])
 
 
-def _repair_json(broken: str, parse_error: str, placeholders=None) -> str:
-    """单次跨模型修复：GLM 的残缺 JSON 交给文字轨（DeepSeek）修一次，只修格式不改内容。"""
+def _repair_json(broken: str, parse_error: str, placeholders=None, outline_anchor=None) -> str:
+    """单次跨模型修复：GLM 的残缺 JSON 交给文字轨（DeepSeek）修一次，只修格式不改内容。
+    outline_anchor=原帖页数：修复时大纲页数受此锚点约束（±1页内），
+    防止修复环节自拟页数铺大纲（真机案例 20260925：原帖2页被修出6页）。"""
     from openai import OpenAI
     if not os.getenv('DEEPSEEK_API_KEY'):
         raise ValueError(broken)
@@ -78,6 +80,16 @@ def _repair_json(broken: str, parse_error: str, placeholders=None) -> str:
     if placeholders:
         extra = ('\n以下值是占位描述，必须依据JSON内已有的真实观察内容改写为具体中文'
                  f'（不得原样保留）：{json.dumps(placeholders[:12], ensure_ascii=False)}')
+    anchor = ''
+    if outline_anchor:
+        anchor = (f'\n原帖共{outline_anchor}页。若 outline 缺失、为空或页数明显超出锚点，'
+                  f'依据 summary 与 original_pages 中已有的观察拟一份不超过{outline_anchor + 1}页的'
+                  'outline（每页含kind/purpose/instruction/source_pages），'
+                  f'页数以{outline_anchor}页为基准（±1页内），禁止铺页数。')
+    else:
+        anchor = ('\n若 outline 缺失或为空数组，可依据 summary 与 original_pages 中已有的观察'
+                  '拟一份1-6页的outline（每页含kind/purpose/instruction/source_pages），'
+                  '只重组已有信息，不新增医学结论。')
     result = OpenAI(api_key=os.environ['DEEPSEEK_API_KEY'], base_url='https://api.deepseek.com',
                     timeout=120, max_retries=0).chat.completions.create(
         model=os.getenv('STUDIO_MODEL', 'deepseek-chat'), max_tokens=2048,
@@ -86,11 +98,8 @@ def _repair_json(broken: str, parse_error: str, placeholders=None) -> str:
                    '只能使用输入JSON中出现过的信息重新组织，禁止引入输入中不存在的主题、领域或事实；'
                    '信息不足的字段留空字符串，不要虚构。'
                    '允许修正结构与类型错误：把表示范围的字符串改为整数数组（"1-3"改[1,2,3]）、'
-                   '把null字段依据上下文补成合理内容、kind字段只能用"text"或"photo"、'
-                   '字符串列表的元素只能是字符串、补齐缺失的必备字段。'
-                   '若 outline 缺失或为空数组，可依据 summary 与 original_pages 中已有的观察'
-                   '拟一份1-6页的outline（每页含kind/purpose/instruction/source_pages），'
-                   '只重组已有信息，不新增医学结论。' + extra},
+                   '把null字段依据上下文补成合理内容、kind字段只能用"text"或"photo"或"chat"、'
+                   '字符串列表的元素只能是字符串、补齐缺失的必备字段。' + anchor + extra},
                   {'role': 'user', 'content': f'以下JSON有问题（{parse_error[:300]}），修复它：\n\n{broken[:6000]}'}])
     return result.choices[0].message.content or ''
 
@@ -116,8 +125,9 @@ def _trace_fields(provider, system, prompt, parsed, images):
             'basis': 'reference_images_and_text' if images else 'ocr_and_text_only'}
 
 
-def generate(schema, task, sources, images=None):
-    """文字轨：DeepSeek，纯文本输入。带单次自修复（偶发复读/格式坏时重修一次）。"""
+def generate(schema, task, sources, images=None, outline_anchor=None):
+    """文字轨：DeepSeek，纯文本输入。带单次自修复（偶发复读/格式坏时重修一次）。
+    outline_anchor=原帖页数：修复环节的大纲页数锚点。"""
     prompt = json.dumps({'task': task, 'sources': sources, 'schema': schema.model_json_schema()}, ensure_ascii=False)
     from openai import OpenAI
     if not os.getenv('DEEPSEEK_API_KEY'):
@@ -134,7 +144,8 @@ def generate(schema, task, sources, images=None):
         parsed = _parse(schema, raw)
         attempts.append({'try': 1, 'provider': 'deepseek', 'outcome': 'parsed', 'usage': usage})
     except Exception:
-        fixed = _repair_json(raw, '输出不是符合schema的JSON：可能复述了资料或缺少字段，请按schema输出分析本身')
+        fixed = _repair_json(raw, '输出不是符合schema的JSON：可能复述了资料或缺少字段，请按schema输出分析本身',
+                             outline_anchor=outline_anchor)
         parsed = _parse(schema, fixed)
         attempts.append({'try': 1, 'provider': 'deepseek', 'outcome': 'parse_failed', 'usage': usage})
         attempts.append({'try': 2, 'provider': 'deepseek-repair', 'outcome': 'repaired'})
@@ -160,9 +171,10 @@ def _is_overload(exc):
     return '1210' in s and '16384' in s
 
 
-def generate_vision(schema, task, sources, images):
+def generate_vision(schema, task, sources, images, outline_anchor=None):
     """视觉轨：智谱 GLM-4V，参考图+文字输入。images: [{'number': int, 'data': bytes}]
     注意：GLM-4V 的 max_tokens 上限 2048，调用方应传 *Compact 系列瘦身 schema。
+    outline_anchor=原帖页数：跨模型修复时的大纲页数锚点。
     token 预算：官方限制 输入+输出 ≤ 16384。输出固定 2048，输入按预算压缩——
     每张图像素预算随图数递减（总图像 token ≈ 5k 内），文字资料同步收紧。
     鲁棒性：超长(1210) → 图文各减半重试一次 → 占位符/格式坏 → 带图自我纠正一次
@@ -293,7 +305,7 @@ def generate_vision(schema, task, sources, images):
         parsed, err2 = parse_ok(raw2)
         if parsed is None:
             # 最后一次机会：交 DeepSeek 修结构（不循环）
-            fixed = _repair_json(raw2, str(err2))
+            fixed = _repair_json(raw2, str(err2), outline_anchor=outline_anchor)
             attempts.append({'try': len(attempts) + 1, 'provider': 'deepseek-repair', 'outcome': 'cross_model_repair'})
             parsed, err3 = parse_ok(fixed)
             if parsed is None:

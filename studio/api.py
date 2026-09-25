@@ -3,6 +3,7 @@ import hmac
 import io
 import json
 import os
+import re
 import shutil
 import sqlite3
 from contextlib import contextmanager
@@ -16,7 +17,7 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, UnidentifiedImageError
 
-from . import cases, llm, prompts, rendering
+from . import cases, llm, prompts, rendering, runlog
 from .models import (CreateTask, Revision, Analysis, AnalysisConfirmation, Draft, PageEdit,
                      CopyEdit, Progress, FeedbackInput, FeedbackAnalysis, AnalysisStageDecision,
                      CaseRanking, VisionRelevance, AnalysisCompact)
@@ -27,8 +28,9 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20260925-2'
+VERSION='cases-20260925-3'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
+STAGE_LABELS_ZH={'retrieval':'第1步检索','language':'第2步语言分析','visual':'第3步视觉分析','facts':'第4步事实资料','writing':'第5步写作规则'}
 MAX_VISION_PAGES=12  # 视觉轨单次看图上限：配合 llm.py 的 token 预算，超过则降级文字轨
 if len(TOKEN)<24:raise RuntimeError('请使用启动脚本，或配置至少24字符的STUDIO_ACCESS_TOKEN')
 Image.MAX_IMAGE_PIXELS=16_000_000
@@ -94,17 +96,19 @@ def sources_for(task):
         result.append({'id':'CASE','type':'参考笔记，仅借鉴结构，不作为医学事实证据','content':task['case']})
     return result
 
-def invoke(task,schema,instruction,images=None):
+def invoke(task,schema,instruction,images=None,outline_anchor=None):
     sources=sources_for(task)
     try:
         if images:
-            result,trace=llm.generate_vision(schema,instruction,sources,images)
+            result,trace=llm.generate_vision(schema,instruction,sources,images,outline_anchor=outline_anchor)
         else:
-            result,trace=llm.generate(schema,instruction,sources)
+            result,trace=llm.generate(schema,instruction,sources,outline_anchor=outline_anchor)
     except Exception as exc:
         task.setdefault('failures',[]).append({'action':schema.__name__,'error_type':type(exc).__name__,
                                                'detail':str(exc)[:300],
                                                'time':datetime.now(timezone.utc).isoformat()})
+        runlog.event(task,DATA,'⚠ 模型调用失败',{'错误':[f"{schema.__name__} {type(exc).__name__}：{str(exc)[:120]}"],
+                                                 '说明':['进度已保存，等待用户手动重试；不会自动循环调用']})
         save(task,task['revision'])
         raise HTTPException(502,'模型未完成，本次已停止。已保存进度，请手动重试；不会自动循环调用。') from None
     trace['sources']=sources
@@ -156,7 +160,12 @@ def rank_and_select(manifest, project, question, audience):
         selected, fallback = cases.select(manifest, project, question)
         if selected:
             fallback['reason'] = '模型打分未完成，已回退关键词规则：' + fallback['reason']
+        fallback['ranking_call'] = {'provider': 'deepseek', 'outcome': 'failed_fallback'}
         return selected, fallback
+    selection_ranking_call = {'provider': trace.get('provider', 'deepseek'),
+                              'elapsed_ms': trace.get('elapsed_ms'),
+                              'usage': trace.get('usage'),
+                              'attempts': [a.get('outcome') for a in trace.get('attempts', [])]}
     scores = {item.case_id: item.relevance for item in ranking.scores}
     # 视觉补判：首图OCR文字过少(<40字)但点赞高(≥500)的候选，文字依据不足，交视觉轨看图判相关度（每任务最多5篇）
     supplemented = 0
@@ -179,6 +188,7 @@ def rank_and_select(manifest, project, question, audience):
         selected, fallback = cases.select(manifest, project, question)
         if selected:
             fallback['reason'] = '模型判定全部候选相关性不足，已回退关键词规则：' + fallback['reason']
+        fallback['ranking_call'] = selection_ranking_call
         return selected, fallback
     top = ranked[0]
     top3 = [{'title': item['case']['title'], 'likes': item['case']['likes'],
@@ -192,6 +202,7 @@ def rank_and_select(manifest, project, question, audience):
         'metric': '综合分=相关性×7+点赞归一化×30，相关性≤3淘汰；相关性由模型判断，排序由代码计算',
         'candidate_ids': [item['case']['id'] for item in ranked],
         'method': 'llm_relevance_plus_likes',
+        'ranking_call': selection_ranking_call,
         'scores': [{'case_id': item['case']['id'], 'relevance': item['relevance'], 'final': item['final']} for item in ranked],
         'top3': top3,
     }
@@ -211,6 +222,16 @@ def create(body: CreateTask):
           'analysis_stages':{name:{'status':'ready' if name=='retrieval' and selected else 'blocked'} for name in ANALYSIS_STAGES},
           'analysis_decisions':[]}
     with db() as conn:conn.execute('INSERT INTO tasks VALUES (?,?,?)',(task['id'],0,json.dumps(task,ensure_ascii=False)))
+    facts=body.facts or ''
+    runlog.event(task,DATA,'创建任务',{
+        '输入':[f'主题：{body.project}；受众：{body.audience}',
+                f'问题：{body.question}',
+                (f'门店事实（{len(facts)}字）：{facts[:200]}…' if len(facts)>200 else f'门店事实：{facts}')],
+        '检索':[selection.get('reason',''),
+                f"方式：{selection.get('method','规则')}；相关候选 {selection.get('eligible_count',0)} 篇"]
+               + ([f"评分前三：{'；'.join(str(i+1)+'.《'+item['title']+'》' for i,item in enumerate(selection['top3']))}"] if selection.get('top3') else [])
+               + ([f"打分调用：{runlog.trace_summary({'provider':selection['ranking_call'].get('provider'),'elapsed_ms':selection['ranking_call'].get('elapsed_ms'),'usage':selection['ranking_call'].get('usage'),'attempts':[{'outcome':o} for o in selection['ranking_call'].get('attempts',[])]})}"] if selection.get('ranking_call') else []),
+        '结果':[('已选定案例：《'+task['case']['title']+'》（'+str(task['case'].get('likes'))+' 赞，'+str(len(task['case']['pages']))+'页）') if task['case'] else '没有相关案例（stage=no_match）']})
     return task
 
 @app.get('/api/tasks/{task_id}',dependencies=[Depends(auth)])
@@ -265,6 +286,60 @@ def validate_analysis(output,task):
     if any(not set(p.source_pages)<=valid for p in output.outline):
         raise HTTPException(422,'新页引用了不存在的原帖页码')
 
+def _norm_purpose(s):
+    """近重复页识别用的归一化：去掉"继续/补充/更多"这类接续词。"""
+    return re.sub(r'^(继续|补充|进一步|更多|额外|又|再)', '', (s or '').strip())
+
+
+def polish_analysis(task, result, pages_count, feedback=''):
+    """确定性修整大纲（弱模型/修复链的已知毛病，真机案例 20260925 复现）：
+    1) 删除占位符页（purpose/instruction 里漏网的"根据参考图填写"回声）；
+    2) 删除近似重复页（同类型且归一化后目的相同或互相包含）；
+    3) 页数超出原帖+1 且用户未明确要求扩页时，做一次有界压缩重写（失败则保留原样并记说明）。
+    返回 (Analysis, 说明列表)；说明写入运行日志并在第 5 步展示。"""
+    notes = []
+    keep = []
+    for o in result.outline:
+        echo = '根据参考图填写' in (o.purpose + o.instruction) or '示例' in o.purpose[:4]
+        if echo:
+            notes.append(f'已删除占位页：{o.purpose[:16]}')
+            continue
+        a = _norm_purpose(o.purpose)
+        dup = False
+        for k in keep:
+            b = _norm_purpose(k.purpose)
+            if o.kind == k.kind and (a == b or (len(a) >= 4 and a in b) or (len(b) >= 4 and b in a)):
+                dup = True
+                break
+        if dup:
+            notes.append(f'已删除重复页：{o.purpose[:16]}')
+            continue
+        keep.append(o)
+    if not keep:
+        keep = result.outline[:1]
+    if len(keep) != len(result.outline):
+        result.outline = keep
+    wants_more = any(w in feedback for w in ('多几页', '增加页', '更多页', '更丰富', '扩写'))
+    if len(result.outline) > pages_count + 1 and not wants_more:
+        try:
+            fixed = invoke(task, Analysis, {
+                'action': '大纲页数超出锚点，压缩合并后重新输出完整分析',
+                'previous_analysis': result.model_dump(),
+                'request': task['request'],
+                'reference_pages': pages_count,
+                'rules': f'原帖共{pages_count}页，新大纲必须不超过{pages_count + 1}页（可以更少）。'
+                         '把同主题的页合并成一页，信息不丢失，不保留重复页；'
+                         'original_pages保持逐页对应原图不变；不能新增医学事实；'
+                         'outline每页含kind/purpose/instruction/source_pages。'})
+            clean_ocr_quotes(fixed, task)
+            validate_analysis(fixed, task)
+            notes.append(f'大纲 {len(result.outline)} 页超出原帖 {pages_count} 页±1，已自动压缩为 {len(fixed.outline)} 页')
+            result = fixed
+        except HTTPException:
+            notes.append(f'大纲 {len(result.outline)} 页超出锚点，压缩未成功，保留原样（可在第5步手动删页）')
+    return result, notes
+
+
 def analyze_via_llm(task, instruction, pages):
     """拆解调用统一入口：视觉轨优先；视觉失败自动降级文字轨重试一次（有限降级，不循环）。
     返回 (Analysis, 视觉是否成功)。视觉失败详情已由 invoke 记入 task['failures'] 与 traces。"""
@@ -273,11 +348,11 @@ def analyze_via_llm(task, instruction, pages):
                    'data': cases.image_bytes(BUNDLES, task['request']['bundle_id'], task['case']['id'], p['number'])}
                   for p in pages]
         try:
-            result = invoke(task, AnalysisCompact, instruction, images=images)
+            result = invoke(task, AnalysisCompact, instruction, images=images, outline_anchor=len(pages))
             return (result.to_analysis() if isinstance(result, AnalysisCompact) else result), True
         except HTTPException:
             pass  # 已记录失败；降级文字轨按 OCR+正文重试一次
-    result = invoke(task, Analysis, instruction)
+    result = invoke(task, Analysis, instruction, outline_anchor=len(pages))
     return result, False
 
 
@@ -295,6 +370,7 @@ def analyze(task_id:str,body:Revision):
         'request':task['request'],'visual_input':planned},pages)
     clean_ocr_quotes(result,task)
     validate_analysis(result,task)
+    result,notes=polish_analysis(task,result,len(pages))
     stages={name:{'status':'ready'} for name in ANALYSIS_STAGES}
     if task.get('analysis_stages',{}).get('retrieval',{}).get('status')=='accepted':
         stages['retrieval']={'status':'accepted'}
@@ -307,7 +383,14 @@ def analyze(task_id:str,body:Revision):
     else:
         basis='OCR+正文；原图展示给用户核对，未进行模型视觉解析'
     task.update(analysis=result.model_dump(),stage='analysis_review',analysis_basis=basis,
-                analysis_stages=stages)
+                analysis_stages=stages,analysis_polish=notes)
+    runlog.event(task,DATA,'拆解（'+('视觉轨' if vision_ok else '文字轨或降级')+'）',{
+        '依据':[basis],
+        '调用':[runlog.trace_summary(tr) for tr in task['traces'][-3:]],
+        '输出':[f'摘要：{result.summary[:80]}']
+               +[f'原帖第{p.number}页：{p.form}｜{p.observation[:36]}' for p in result.original_pages[:8]]
+               +[f'大纲第{i+1}页：{o.kind}｜{o.purpose[:26]}（借鉴{o.source_pages}）' for i,o in enumerate(result.outline)]
+               +(notes or [])})
     return save(task,task['revision'])
 
 @app.post('/api/tasks/{task_id}/analysis-stage',dependencies=[Depends(auth)])
@@ -328,12 +411,18 @@ def analysis_stage(task_id:str,body:AnalysisStageDecision):
         stages[stage]={'status':'accepted' if body.decision=='accept' else 'rejected','feedback':body.feedback}
         decisions.append({'stage':stage,'decision':body.decision,'feedback':body.feedback,'time':datetime.now(timezone.utc).isoformat()})
         if body.decision=='reject':task['stage']='candidate'
+        runlog.event(task,DATA,f'第1步检索·{"采用" if body.decision=="accept" else "退回"}',{
+            '用户输入':[('修改建议：'+body.feedback) if body.feedback.strip() else '（无文字建议）'],
+            '说明':['退回会保留旧任务，并按建议重新检索创建新任务'] if body.decision=='reject' else ['检索结果已确认']})
         return save(task,body.revision)
     if not task.get('analysis'):
         raise HTTPException(409,'请先完成模型拆解，再确认分析步骤')
     if body.decision=='accept':
         stages[stage]={'status':'accepted','feedback':body.feedback}
         decisions.append({'stage':stage,'decision':'accept','feedback':body.feedback,'time':datetime.now(timezone.utc).isoformat()})
+        runlog.event(task,DATA,f'{STAGE_LABELS_ZH.get(stage,stage)}·采用',{
+            '用户输入':[('补充说明：'+body.feedback) if body.feedback.strip() else '（无补充）'],
+            '说明':['该步结果已确认，解锁下一步']})
         return save(task,body.revision)
     result,_=analyze_via_llm(task,{
         'action':prompts.STAGE_RERUN.format(stage=stage,feedback=body.feedback),
@@ -344,11 +433,18 @@ def analysis_stage(task_id:str,body:AnalysisStageDecision):
         task['case']['pages'])
     clean_ocr_quotes(result,task)
     validate_analysis(result,task)
-    task['analysis']=result.model_dump()
+    result,notes=polish_analysis(task,result,len(task['case']['pages']),body.feedback)
+    task.update(analysis=result.model_dump(),analysis_polish=notes)
     for name in ANALYSIS_STAGES[position:]:stages[name]={'status':'ready'}
     stages[stage]['feedback']=body.feedback
     decisions.append({'stage':stage,'decision':'reject','feedback':body.feedback,'time':datetime.now(timezone.utc).isoformat()})
     task['stage']='analysis_review'
+    runlog.event(task,DATA,f'{STAGE_LABELS_ZH.get(stage,stage)}·退回并重做',{
+        '用户输入':[f'修改建议：{body.feedback}'],
+        '调用':[runlog.trace_summary(tr) for tr in task['traces'][-2:]],
+        '输出':[f'摘要：{result.summary[:60]}']
+               +[f'大纲第{i+1}页：{o.kind}｜{o.purpose[:26]}' for i,o in enumerate(result.outline)]
+               +(notes or [])})
     return save(task,task['revision'])
 
 @app.post('/api/tasks/{task_id}/confirm-analysis',dependencies=[Depends(auth)])
@@ -358,6 +454,9 @@ def confirm_analysis(task_id:str,body:AnalysisConfirmation):
     validate_analysis(body.analysis,task)
     task.update(confirmed_analysis=body.analysis.model_dump(),stage='ready_to_write',
                 analysis_stages={name:{'status':'accepted'} for name in ANALYSIS_STAGES})
+    runlog.event(task,DATA,'确认拆解（进入草稿）',{
+        '输出':[f'大纲共{len(body.analysis.outline)}页：']
+               +[f'第{i+1}页：{o.kind}｜{o.purpose[:26]}（借鉴{o.source_pages}）' for i,o in enumerate(body.analysis.outline)]})
     return save(task,body.revision)
 
 @app.post('/api/tasks/{task_id}/draft',dependencies=[Depends(auth)])
@@ -373,6 +472,11 @@ def draft(task_id:str,body:Revision):
     if task['draft']:task['history'].append({'draft':task['draft'],'renders':task['renders'],'page_reviews':task['page_reviews']})
     task.update(draft=result.model_dump(),stage='making',renders={},page_reviews={},copy_review=None,page_index=0,
                 generation_sources=sources_for(task))
+    runlog.event(task,DATA,'生成逐页草稿',{
+        '调用':[runlog.trace_summary(task['traces'][-1])],
+        '输出':[f'标题：{result.title}']
+               +[f'第{p.number}页：{p.title[:24]}（{"；".join(p.pending)[:40] or "无待核实"}）' for p in result.pages]
+               +([f'整体待核实：{"；".join(result.missing_information)[:80]}'] if result.missing_information else [])})
     return save(task,body.revision)
 
 def page_data(task,number):
@@ -402,6 +506,9 @@ def upload(task_id:str,number:int,photo:UploadFile|None=File(None),caption:str=F
     task['assets'][str(number)]={'file':filename,'caption':caption,'width':width,'height':height,'sha256':hashlib.sha256(raw).hexdigest()}
     task['renders'].pop(str(number),None);task['page_reviews'].pop(str(number),None)
     task.update(stage='making',copy_review=None)
+    runlog.event(task,DATA,f'第{number}页·上传实拍照片',{
+        '用户输入':[f'照片说明：{caption[:80]}',f'尺寸：{width}x{height}'],
+        '说明':['该页此前生成的成品图已作废，需重新确认生成']})
     try:return save(task,revision)
     except Exception:path.unlink(missing_ok=True);raise
 
@@ -413,6 +520,9 @@ def make_page(task_id:str,number:int,body:PageEdit):
         task['renders'].pop(str(number),None)
         task['page_reviews'][str(number)]={'confirmed':False,'resolution':body.resolution}
         task.update(copy_review=None,stage='making')
+        runlog.event(task,DATA,f'第{number}页·保存文字草稿',{
+            '用户输入':[f'标题：{body.title[:30]}','正文已修改（未确认生成）'],
+            '说明':['该页此前生成的成品图已作废']})
         return save(task,body.revision)
     if page['pending'] and not body.resolution.strip():raise HTTPException(422,'本页有待核实内容，请说明已补充的依据，或删除了哪些未核实表述')
     raw=None
@@ -481,6 +591,13 @@ def make_page(task_id:str,number:int,body:PageEdit):
     task['page_reviews'][str(number)]={'confirmed':True,'resolution':body.resolution,'pending_at_review':page['pending'],
                                       'time':datetime.now(timezone.utc).isoformat()}
     task.update(stage='making',copy_review=None)
+    runlog.event(task,DATA,f'第{number}页·{"确认并生成成品" if body.confirmed else "保存文字草稿"}',{
+        '用户输入':[f'标题：{body.title[:30]}',
+                (f'待核实处理：{body.resolution[:80]}') if body.resolution.strip() else '（无待核实说明）']
+               +([f'样式：{body.card_theme}；重新生成底图'] if body.regenerate_background else []),
+        '输出':[f'渲染方式：{meta.get("method")}'+(f'；底图来源：{background_source}' if background_source else ''),
+                f'成品：{meta.get("width")}x{meta.get("height")} PNG（{len(rendered)//1024}KB）']
+               +([f'⚠ 底图生成失败已记录（共{len(task.get("failures", []))}条失败记录）'] if any(f['action']=='generate_background' for f in task.get('failures',[])[-1:]) else [])})
     try:return save(task,body.revision)
     except Exception:path.unlink(missing_ok=True);raise
 
@@ -516,6 +633,11 @@ def copy_review(task_id:str,body:CopyEdit):
     if task['draft']['missing_information'] and not body.resolution.strip():raise HTTPException(422,'请说明待核实信息如何处理，不能直接混入正文')
     task['draft'].update(title=body.title,body=body.body)
     task.update(copy_review={'confirmed':True,'resolution':body.resolution,'time':datetime.now(timezone.utc).isoformat()},stage='ready_to_export')
+    _inputs=[f'标题：{body.title[:40]}']
+    if task['draft'].get('missing_information'):
+        _inputs.append(f'待核实处理：{body.resolution[:80]}' if body.resolution.strip() else '⚠ 有待核实项但未填写处理说明')
+    runlog.event(task,DATA,'确认标题正文（进入导出）',{
+        '用户输入':_inputs,'结果':['全部页面已确认，可导出 ZIP']})
     return save(task,body.revision)
 
 @app.get('/api/tasks/{task_id}/export',dependencies=[Depends(auth)])
@@ -531,7 +653,11 @@ def export(task_id:str):
         raw=path.read_bytes()
         if hashlib.sha256(raw).hexdigest()!=entry['sha256']:raise HTTPException(409,'成品图片已改变，请重新确认')
         images.append(raw)
-    return Response(rendering.export_zip(task,images),media_type='application/zip',headers={'Content-Disposition':f'attachment; filename="post_{task_id}.zip"'})
+    export_result=rendering.export_zip(task,images)
+    runlog.event(task,DATA,'导出图文包',{
+        '结果':[f'ZIP {len(export_result)//1024}KB；{len(images)} 张成品图 + 标题正文 + 来源记录 + 待核实记录'],
+        '说明':['任务完成；发布由用户本人操作，本工具不代发']})
+    return Response(export_result,media_type='application/zip',headers={'Content-Disposition':f'attachment; filename="post_{task_id}.zip"'})
 
 @app.post('/api/tasks/{task_id}/feedback',dependencies=[Depends(auth)])
 def feedback(task_id:str,body:FeedbackInput):
@@ -541,4 +667,8 @@ def feedback(task_id:str,body:FeedbackInput):
                  'notice':body.notice,'posted_text':body.posted_text or task['draft']['body']})
     if any(q not in body.notice for q in result.platform_quotes):raise HTTPException(502,'平台引文不一致，请重试')
     task['feedback'].append({'input':body.model_dump(),'analysis':result.model_dump(),'status':'待人工复核，不自动更新规则'})
+    runlog.event(task,DATA,'记录发布反馈',{
+        '用户输入':[f'平台原文：{body.notice[:120]}'],
+        '输出':[f'平台引文 {len(result.platform_quotes)} 条；假设 {len(result.hypotheses)} 条；下一步 {len(result.next_actions)} 条'],
+        '说明':['分析结果待人工复核，不自动更新任何规则']})
     return save(task,task['revision'])

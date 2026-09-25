@@ -543,6 +543,14 @@ function renderWritingStage(parent) {
   const analysis = task.analysis;
   parent.append(el('h3', 'AI 的写作规则与逐页大纲'));
   parent.append(el('p', '这一阶段只决定组织方式，不会把参考帖医学结论直接复制到成品。', 'muted'));
+  if (Array.isArray(task.analysis_polish) && task.analysis_polish.length) {
+    const polish = el('div', undefined, 'anchor-warning');
+    polish.append(el('b', 'AI 产出后程序自动修整了以下内容（详见运行日志）：'));
+    const ul = el('ul');
+    task.analysis_polish.forEach(note => ul.append(el('li', note)));
+    polish.append(ul);
+    parent.append(polish);
+  }
   const pageCount = task.case?.pages?.length || 0;
   if (pageCount && Math.abs(analysis.outline.length - pageCount) > 1) {
     parent.append(el('p', '注意：原帖共 ' + pageCount + ' 页，本大纲安排了 ' + analysis.outline.length
