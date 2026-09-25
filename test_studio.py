@@ -1,4 +1,5 @@
-﻿import copy
+﻿import base64
+import copy
 import hashlib
 import io
 import json
@@ -18,7 +19,7 @@ os.environ['STUDIO_ACCESS_TOKEN']='test-only-access-key-not-for-production'
 os.environ['VISION_PROVIDER']=''
 from fastapi.testclient import TestClient
 from PIL import Image,ImageChops
-from studio import api,cases,rendering
+from studio import api,cases,llm,rendering
 from studio.models import Analysis,AnalysisCompact,Draft,FeedbackAnalysis,CaseRanking
 
 
@@ -42,6 +43,21 @@ def bundle(missing=False,case_empty=False):
     with zipfile.ZipFile(b,'w') as z:
         z.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False))
         if not missing:z.writestr(member,data)
+    return b.getvalue()
+
+
+def bundle_many_pages(count=13):
+    """超过视觉页数上限的案例：用于验证自动降级文字轨。"""
+    data=picture();member='images/row000_01.png'
+    pages=[{'number':i,'ocr':f'M22光子嫩肤科普第{i}页','image':member,
+            'image_sha256':hashlib.sha256(data).hexdigest(),'ocr_status':'available'} for i in range(1,count+1)]
+    note={'id':'row000','title':'M22超多页案例','body':'结构说明','likes':3000,'author':'样本作者',
+          'url':'https://www.xiaohongshu.com/explore/example','collected_at':'2026-09-15','pages':pages,'research':None}
+    manifest={'schema_version':1,'version':'test-many','cases':[note]}
+    b=io.BytesIO()
+    with zipfile.ZipFile(b,'w') as z:
+        z.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False))
+        z.writestr(member,data)
     return b.getvalue()
 
 
@@ -164,6 +180,67 @@ class StudioTests(unittest.TestCase):
              patch('studio.llm.generate_vision',side_effect=vision_fake):
             t=self.post(t,'/analyze')
         self.assertIn('原图',t['analysis_basis'])
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_vision_failure_falls_back_to_text_track(self,mock):
+        t=self.create()
+        def vision_fail(schema,instruction,sources,images):
+            raise RuntimeError('视觉模型输出质量不合格')
+        with patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}),\
+             patch('studio.llm.generate_vision',side_effect=vision_fail):
+            t=self.post(t,'/analyze')
+        self.assertIn('降级',t['analysis_basis'])
+        self.assertIn('OCR+正文',t['analysis_basis'])
+        self.assertTrue(t['failures'])                       # 视觉失败已留档
+        args,kwargs=mock.call_args
+        self.assertNotIn('images',kwargs)                    # 降级后走文字轨不带图
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_many_pages_falls_back_to_text_track(self,mock):
+        r=self.client.post('/api/bundles',files={'bundle':('many.zip',bundle_many_pages(),'application/zip')})
+        self.assertEqual(r.status_code,200,r.text)
+        t=self.create(bundle_id=r.json()['bundle_id'])
+        self.assertEqual(len(t['case']['pages']),13)
+        with patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}):
+            t=self.post(t,'/analyze')
+        self.assertIn('上限',t['analysis_basis'])
+        self.assertIn('未做视觉解析',t['analysis_basis'])
+        args,kwargs=mock.call_args
+        self.assertNotIn('images',kwargs)  # 走文字轨：不带图
+
+    def test_vision_overload_retry_shrinks_payload(self):
+        """1210 超长（输入+输出>16384）时：图文各减半重试一次并成功。"""
+        good=json.dumps({'summary':'实拍对比','original_pages':[{'number':1,'form':'文字卡','observation':'清单式排版',
+                     'ocr_quote':'','borrow':'列表结构'}],'borrow':['按时间线组织'],'missing_information':[],
+                     'outline':[{'kind':'text','purpose':'封面提问','instruction':'制作封面','source_pages':[1]}]},ensure_ascii=False)
+        big=io.BytesIO();Image.new('RGB',(1600,2100),'#3a6ea5').save(big,format='PNG');big=big.getvalue()
+        class _Resp:
+            def __init__(self,content):
+                self.choices=[type('C',(),{'message':type('M',(),{'content':content})()})()]
+                self.usage=type('U',(),{'prompt_tokens':10,'completion_tokens':5})()
+        calls=[]
+        class _Comp:
+            def create(self,**kw):
+                calls.append(kw)
+                if len(calls)==1:
+                    raise ValueError("Error code: 400 - {'error': {'code': '1210', 'message': "
+                                     "'Input validation error: `inputs` tokens + `max_new_tokens` must be "
+                                     "<= 16384. Given: 14801 `inputs` tokens and 2048 `max_new_t...'}}")
+                return _Resp(good)
+        class _Client:
+            def __init__(self,**kw):self.chat=type('Chat',(),{'completions':_Comp()})()
+        with patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}),\
+             patch('openai.OpenAI',_Client):
+            parsed,trace=llm.generate_vision(AnalysisCompact,{'q':'问题'+'细'*8000},[],
+                                             [{'number':1,'data':big}])
+        self.assertEqual(parsed.summary,'实拍对比')
+        self.assertEqual([a['outcome'] for a in trace['attempts']],['parse_shrunk'])
+        def dims(call):
+            url=call['messages'][1]['content'][0]['image_url']['url']
+            with Image.open(io.BytesIO(base64.b64decode(url.split(',',1)[1]))) as im:return im.size
+        first,second=dims(calls[0]),dims(calls[1])
+        self.assertLessEqual(first[0]*first[1],1_920_000)      # 首次已按预算压缩
+        self.assertLess(second[0]*second[1],first[0]*first[1]) # 超限自愈：图片进一步压到最小预算
 
     @patch('studio.llm.generate',side_effect=fake_generate)
     def test_analysis_stage_gates_and_reject_reruns_current_step(self,mock):

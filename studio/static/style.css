@@ -38,3 +38,6 @@
 .task-badge{display:inline-block;font-size:10px;color:#2e7a58;background:#e4f3e7;border-radius:15px;padding:3px 8px;margin-left:8px;vertical-align:1px}
 .task-badge.done{background:#dcefe2;color:#1f6a4b;font-weight:700}
 .anchor-warning{background:#fff4ec;border:1px solid #edc8ad;border-radius:9px;padding:10px 13px}
+/* 参考图/成品预览约束在容器内：不再按原始 1080px 宽度撑破窗口 */
+.case-page img.preview{display:block;width:100%;max-height:400px;object-fit:contain;border:1px solid #dbe7df;border-radius:8px;background:#f4f7f3;margin:4px 0}
+.panel>img.preview{display:block;max-width:100%;max-height:520px;object-fit:contain;border:1px solid #dbe7df;border-radius:10px;margin:8px 0}

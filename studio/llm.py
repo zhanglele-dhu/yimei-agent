@@ -81,6 +81,8 @@ def _repair_json(broken: str, parse_error: str, placeholders=None) -> str:
         model=os.getenv('STUDIO_MODEL', 'deepseek-chat'), max_tokens=2048,
         messages=[{'role': 'system', 'content':
                    '只输出修复后的合法JSON，不输出任何其他内容。'
+                   '只能使用输入JSON中出现过的信息重新组织，禁止引入输入中不存在的主题、领域或事实；'
+                   '信息不足的字段留空字符串，不要虚构。'
                    '允许修正结构与类型错误：把表示范围的字符串改为整数数组（"1-3"改[1,2,3]）、'
                    '把null字段依据上下文补成合理内容、kind字段只能用"text"或"photo"、'
                    '字符串列表的元素只能是字符串、补齐缺失的必备字段。'
@@ -91,11 +93,15 @@ def _repair_json(broken: str, parse_error: str, placeholders=None) -> str:
     return result.choices[0].message.content or ''
 
 
-def _image_b64(data, max_side=1600, quality=85):
-    """参考图转 base64。max_side 为长边上限；多图请求传更小的值控制总载荷。"""
+def _image_b64(data, max_pixels=1_920_000, quality=85):
+    """参考图转 base64，按像素面积预算缩放（图越多预算越小，见 generate_vision）。
+    实测校准：GLM-4V 约每 1000 像素消耗 1 个输入 token。"""
     with Image.open(io.BytesIO(data)) as im:
         im = im.convert('RGB')
-        im.thumbnail((round(max_side * .75), max_side))
+        w, h = im.size
+        scale = min(1.0, (max_pixels / (w * h)) ** 0.5)
+        if scale < 1.0:
+            im = im.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS)
         buf = io.BytesIO()
         im.save(buf, format='JPEG', quality=quality)
     return base64.b64encode(buf.getvalue()).decode()
@@ -146,10 +152,19 @@ def _leaf_strings(obj):
         yield obj.strip()
 
 
+def _is_overload(exc):
+    """GLM-4V 1210 号错误：输入 token + max_new_tokens 超出 16384 上限。"""
+    s = str(exc)
+    return '1210' in s and '16384' in s
+
+
 def generate_vision(schema, task, sources, images):
     """视觉轨：智谱 GLM-4V，参考图+文字输入。images: [{'number': int, 'data': bytes}]
     注意：GLM-4V 的 max_tokens 上限 2048，调用方应传 *Compact 系列瘦身 schema。
-    鲁棒性：占位符泄漏/格式坏 → 带图自我纠正一次 → 仍失败交 DeepSeek 修一次 → 才放弃。"""
+    token 预算：官方限制 输入+输出 ≤ 16384。输出固定 2048，输入按预算压缩——
+    每张图像素预算随图数递减（总图像 token ≈ 5k 内），文字资料同步收紧。
+    鲁棒性：超长(1210) → 图文各减半重试一次 → 占位符/格式坏 → 带图自我纠正一次
+    → 仍失败交 DeepSeek 修一次 → 才放弃。每类都是有限次，不循环。"""
     if not _vision_enabled():
         raise RuntimeError('视觉轨未配置（需要 VISION_PROVIDER=glm 和 VISION_API_KEY）')
     from openai import OpenAI
@@ -162,41 +177,84 @@ def generate_vision(schema, task, sources, images):
         key_names.add(prop.get('title', '').lower())
         for sub in (prop.get('items', {}).get('properties') or {}).values():
             key_names.add(sub.get('title', '').lower())
-    prompt = (
-        '观察参考图，参照下面这个JSON示例的结构填写真实分析：'
-        '保持所有字段名和嵌套结构完全一致，把示例值全部替换成你从图中看到的内容。'
-        '必须用简体中文。每个original_pages元素必须包含 number/form/observation/borrow 字段；'
-        '每个outline元素必须包含 kind/purpose/instruction/source_pages 字段。'
-        '每个字段值尽量不超过40个汉字。'
-        '只输出一个JSON对象：以{开头以}结尾，不要```代码块，不要输出本段文字、schema定义或任何解释。\n'
-        f'【任务与资料】{json.dumps({"task": task, "sources": sources}, ensure_ascii=False)[:6000]}\n'
-        f'【结构示例（内容需替换为真实分析）】{json.dumps(example, ensure_ascii=False)}'
-    )
-    # 多图请求自适应压缩：图越多压得越小，控制请求总体积
-    many = len(images) > 8
-    side, quality = ((1200, 75) if many else (1600, 85))
-    content = [{'type': 'image_url', 'image_url': {'url': f"data:image/jpeg;base64,{_image_b64(img['data'], side, quality)}"}}
-               for img in images]
-    content.append({'type': 'text', 'text': prompt})
+    n = max(1, len(images))
+    # 图像总像素预算约 4.2M（实测 GLM-4V 约 1 token/600像素），文字预算随图数收紧，
+    # 首轮输入控制在 ~12.5k token 内（上限 16384 减去输出 2048 再留余量）
+    pixel_budget = min(1_920_000, max(450_000, 4_200_000 // n))
+    text_budget = max(2500, 6000 - 400 * n)
+    quality = 85 if len(images) <= 6 else 78
+
+    def build_prompt(chars):
+        n_img = len(images)
+        return (
+            f'逐张观察参考图并拆解。本次共{n_img}张参考图，按出现顺序编号1到{n_img}；'
+            f'original_pages数组必须恰好{n_img}条，第i条描述第i张图，不要多条也不要少条。'
+            '参照下面JSON示例的结构填写真实分析，把示例值全部替换成你从图中看到的内容，必须用简体中文。'
+            '每个original_pages元素必须包含 number/form/observation/ocr_quote/borrow 字段；'
+            '每个outline元素必须包含 kind/purpose/instruction/source_pages 字段；outline是数组不是对象。'
+            'borrow和missing_information是字符串数组。必须输出完整JSON，borrow、missing_information、'
+            'outline三个字段一个都不能少，写完整个对象才结束。'
+            '每个字段值尽量不超过40个汉字。'
+            '只输出一个JSON对象：以{开头以}结尾，不要```代码块，不要输出本段文字、schema定义或任何解释。\n'
+            f'【任务与资料】{json.dumps({"task": task, "sources": sources}, ensure_ascii=False)[:chars]}\n'
+            f'【结构示例（内容需替换为真实分析）】{json.dumps(example, ensure_ascii=False)}'
+        )
+
+    def build_content(px_budget, chars):
+        content = [{'type': 'image_url',
+                    'image_url': {'url': f"data:image/jpeg;base64,{_image_b64(img['data'], px_budget, quality)}"}}
+                   for img in images]
+        content.append({'type': 'text', 'text': build_prompt(chars)})
+        return content
+
+    prompt = build_prompt(text_budget)
     client = OpenAI(api_key=os.environ['VISION_API_KEY'], base_url='https://open.bigmodel.cn/api/paas/v4',
                     timeout=180, max_retries=0)
     model = os.getenv('STUDIO_VISION_MODEL', 'glm-4v-plus')
-    messages = [{'role': 'system', 'content': SYSTEM_PROMPT}, {'role': 'user', 'content': content}]
+    messages = [{'role': 'system', 'content': SYSTEM_PROMPT},
+                {'role': 'user', 'content': build_content(pixel_budget, text_budget)}]
     attempts = []
     total_usage = {'prompt_tokens': 0, 'completion_tokens': 0}
 
+    def _shrink_images(msgs):
+        """1210 自愈：把消息里的图片全部重编码到最小预算（450k 像素）。"""
+        out = []
+        for m in msgs:
+            c = m.get('content')
+            if isinstance(c, list):
+                shrunk = []
+                for part in c:
+                    if part.get('type') == 'image_url':
+                        raw = base64.b64decode(part['image_url']['url'].split(',', 1)[1])
+                        shrunk.append({'type': 'image_url',
+                                       'image_url': {'url': 'data:image/jpeg;base64,' + _image_b64(raw, 450_000)}})
+                    else:
+                        shrunk.append(part)
+                m = {**m, 'content': shrunk}
+            out.append(m)
+        return out
+
     def call(msgs, outcome_label):
-        t0 = time.monotonic()
-        res = client.chat.completions.create(model=model, max_tokens=2048, messages=msgs)
-        usage = _usage(res)
-        total_usage['prompt_tokens'] += usage.get('prompt_tokens') or 0
-        total_usage['completion_tokens'] += usage.get('completion_tokens') or 0
-        attempts.append({'try': len(attempts) + 1, 'provider': 'glm-vision', 'outcome': outcome_label,
-                         'usage': usage, 'elapsed_ms': round((time.monotonic() - t0) * 1000)})
-        return res.choices[0].message.content or ''
+        def do_call(m, label):
+            t0 = time.monotonic()
+            res = client.chat.completions.create(model=model, max_tokens=2048, messages=m)
+            usage = _usage(res)
+            total_usage['prompt_tokens'] += usage.get('prompt_tokens') or 0
+            total_usage['completion_tokens'] += usage.get('completion_tokens') or 0
+            attempts.append({'try': len(attempts) + 1, 'provider': 'glm-vision', 'outcome': label,
+                             'usage': usage, 'elapsed_ms': round((time.monotonic() - t0) * 1000)})
+            return res.choices[0].message.content or ''
+        try:
+            return do_call(msgs, outcome_label)
+        except Exception as exc:
+            if not _is_overload(exc):
+                raise
+            # 该轮输入超限（自我纠正会把上轮输出加进上下文，也可能超）：压图重发一次，不循环
+            return do_call(_shrink_images(msgs), outcome_label + '_shrunk')
 
     def parse_ok(text):
-        """解析 + 占位符就地清除（清空而非失败：用户在确认步骤可见、可改、可退回重做）。"""
+        """解析 + 占位符就地清除 + 页数合同校验（每张参考图恰好一条 original_pages）。
+        页数不符也走自我纠正：带着图让模型自己改，比应用层事后硬拒成功率高。"""
         try:
             parsed = _parse(schema, text)
         except Exception as err:
@@ -217,6 +275,8 @@ def generate_vision(schema, task, sources, images):
         cleaned = walk(dump)
         sanitized = sum(1 for a, b in zip(_leaf_strings(dump), _leaf_strings(cleaned)) if a and not b)
         parsed = schema.model_validate(cleaned)
+        if images and hasattr(parsed, 'original_pages') and len(parsed.original_pages) != len(images):
+            return None, ValueError(f'original_pages 必须恰好 {len(images)} 条（每张参考图一条），当前输出了 {len(parsed.original_pages)} 条')
         return (parsed, sanitized), None
 
     raw = call(messages, 'parse')
@@ -224,7 +284,7 @@ def generate_vision(schema, task, sources, images):
     if parsed is None:
         # 带图自我纠正一次：把上次的输出和错误发回去，让看过图的模型自己改
         messages = messages + [
-            {'role': 'assistant', 'content': raw[:4000]},
+            {'role': 'assistant', 'content': raw[:1500]},
             {'role': 'user', 'content': f'你上面的输出不合格：{str(err)[:300]}。'
              '不要复制示例值，必须替换成你从参考图中看到的真实内容，重新只输出一个JSON。'}]
         raw2 = call(messages, 'self_correct')

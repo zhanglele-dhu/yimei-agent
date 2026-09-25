@@ -27,8 +27,9 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20260924-1'
+VERSION='cases-20260924-2'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
+MAX_VISION_PAGES=12  # 视觉轨单次看图上限：配合 llm.py 的 token 预算，超过则降级文字轨
 if len(TOKEN)<24:raise RuntimeError('请使用启动脚本，或配置至少24字符的STUDIO_ACCESS_TOKEN')
 Image.MAX_IMAGE_PIXELS=16_000_000
 
@@ -264,6 +265,22 @@ def validate_analysis(output,task):
     if any(not set(p.source_pages)<=valid for p in output.outline):
         raise HTTPException(422,'新页引用了不存在的原帖页码')
 
+def analyze_via_llm(task, instruction, pages):
+    """拆解调用统一入口：视觉轨优先；视觉失败自动降级文字轨重试一次（有限降级，不循环）。
+    返回 (Analysis, 视觉是否成功)。视觉失败详情已由 invoke 记入 task['failures'] 与 traces。"""
+    if llm.supports_vision() and len(pages) <= MAX_VISION_PAGES:
+        images = [{'number': p['number'],
+                   'data': cases.image_bytes(BUNDLES, task['request']['bundle_id'], task['case']['id'], p['number'])}
+                  for p in pages]
+        try:
+            result = invoke(task, AnalysisCompact, instruction, images=images)
+            return (result.to_analysis() if isinstance(result, AnalysisCompact) else result), True
+        except HTTPException:
+            pass  # 已记录失败；降级文字轨按 OCR+正文重试一次
+    result = invoke(task, Analysis, instruction)
+    return result, False
+
+
 @app.post('/api/tasks/{task_id}/analyze',dependencies=[Depends(auth)])
 def analyze(task_id:str,body:Revision):
     task=current(task_id,body.revision)
@@ -273,25 +290,25 @@ def analyze(task_id:str,body:Revision):
     if any(not p.get('image') for p in pages):raise HTTPException(409,'参考案例缺少原图，先补齐资料包，不猜测画面')
     if not any(p['ocr'].strip() for p in pages) and not task['case']['body'].strip():
         raise HTTPException(409,'原帖缺少可分析文字，请补充OCR或正文')
-    images=[]
-    # Only reference images, never user photos, may be sent for optional visual analysis.
-    # 视觉轨用瘦身 schema（GLM-4V max_tokens 上限 2048，完整 Analysis 会被截断），
-    # 文字轨保持完整 Analysis；产出统一转回 Analysis 存库。
-    if llm.supports_vision():
-        images=[{'number':p['number'],'data':cases.image_bytes(BUNDLES,task['request']['bundle_id'],task['case']['id'],p['number'])} for p in pages]
-    analysis_schema = AnalysisCompact if images else Analysis
-    result=invoke(task,analysis_schema,{'action':prompts.analyze_instruction(len(pages)),
-        'request':task['request'],'visual_input':bool(images)},images=images)
-    if isinstance(result,AnalysisCompact):
-        result=result.to_analysis()
+    planned=llm.supports_vision() and len(pages)<=MAX_VISION_PAGES
+    result,vision_ok=analyze_via_llm(task,{'action':prompts.analyze_instruction(len(pages)),
+        'request':task['request'],'visual_input':planned},pages)
     clean_ocr_quotes(result,task)
     validate_analysis(result,task)
     stages={name:{'status':'ready'} for name in ANALYSIS_STAGES}
     if task.get('analysis_stages',{}).get('retrieval',{}).get('status')=='accepted':
         stages['retrieval']={'status':'accepted'}
-    task.update(analysis=result.model_dump(),stage='analysis_review',analysis_basis='原图+OCR+正文' if images else 'OCR+正文；原图展示给用户核对，未进行模型视觉解析',
+    if vision_ok:
+        basis='原图+OCR+正文'
+    elif llm.supports_vision() and len(pages)<=MAX_VISION_PAGES:
+        basis='视觉轨未完成（失败详情已记录），已自动降级按OCR+正文拆解；可退回重做让视觉轨再试'
+    elif len(pages)>MAX_VISION_PAGES:
+        basis=f'OCR+正文；原帖共{len(pages)}页，超出视觉模型单次看图上限（{MAX_VISION_PAGES}页），未做视觉解析，可对照下方原图自行核对'
+    else:
+        basis='OCR+正文；原图展示给用户核对，未进行模型视觉解析'
+    task.update(analysis=result.model_dump(),stage='analysis_review',analysis_basis=basis,
                 analysis_stages=stages)
-    return save(task,body.revision)
+    return save(task,task['revision'])
 
 @app.post('/api/tasks/{task_id}/analysis-stage',dependencies=[Depends(auth)])
 def analysis_stage(task_id:str,body:AnalysisStageDecision):
@@ -318,21 +335,13 @@ def analysis_stage(task_id:str,body:AnalysisStageDecision):
         stages[stage]={'status':'accepted','feedback':body.feedback}
         decisions.append({'stage':stage,'decision':'accept','feedback':body.feedback,'time':datetime.now(timezone.utc).isoformat()})
         return save(task,body.revision)
-    images=[]
-    # 重做的都是同一份 Analysis：视觉轨可用就带参考图走视觉轨（含瘦身合同+修复栈），
-    # 不再限定 visual 步骤；无视觉轨时走文字轨完整 schema。
-    if llm.supports_vision():
-        images=[{'number':p['number'],'data':cases.image_bytes(BUNDLES,task['request']['bundle_id'],task['case']['id'],p['number'])} for p in task['case']['pages']]
-    rerun_schema = AnalysisCompact if images else Analysis
-    result=invoke(task,rerun_schema,{
+    result,_=analyze_via_llm(task,{
         'action':prompts.STAGE_RERUN.format(stage=stage,feedback=body.feedback),
         'previous_analysis':task['analysis'],
         'request':task['request'],
         'reference_pages':len(task['case']['pages']),
         'rules':'保留未被要求修改的部分；original_pages必须逐页对应原图，OCR引文逐字来自原页；不能新增未经资料支持的医学事实。outline页数以原帖页数（见reference_pages）为锚点，默认±1页内，除非修改建议明确要求增减。'},
-        images=images)
-    if isinstance(result,AnalysisCompact):
-        result=result.to_analysis()
+        task['case']['pages'])
     clean_ocr_quotes(result,task)
     validate_analysis(result,task)
     task['analysis']=result.model_dump()
@@ -340,7 +349,7 @@ def analysis_stage(task_id:str,body:AnalysisStageDecision):
     stages[stage]['feedback']=body.feedback
     decisions.append({'stage':stage,'decision':'reject','feedback':body.feedback,'time':datetime.now(timezone.utc).isoformat()})
     task['stage']='analysis_review'
-    return save(task,body.revision)
+    return save(task,task['revision'])
 
 @app.post('/api/tasks/{task_id}/confirm-analysis',dependencies=[Depends(auth)])
 def confirm_analysis(task_id:str,body:AnalysisConfirmation):

@@ -106,6 +106,12 @@ class AnalysisCompact(BaseModel):
     def normalize(cls, data):
         if not isinstance(data, dict):
             return data
+        # 弱模型会把整个结果包进外层键（如 task/analysis）里：解包还原
+        if 'original_pages' not in data:
+            for v in data.values():
+                if isinstance(v, dict) and 'original_pages' in v:
+                    data = v
+                    break
         # 字符串列表字段：弱模型常输出 [{'text': x}]、[123] 或单个字符串
         for key in ('borrow', 'missing_information'):
             v = data.get(key)
