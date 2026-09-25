@@ -72,9 +72,17 @@ def fake_generate(schema,instruction,sources,images=None):
                      {'kind':'text','purpose':'三个确认问题','instruction':'制作问题清单','visual_spec':'编号列表样式','source_pages':[1]}])
         result=schema.model_validate(data)
     elif schema is Draft:
+        pages=[]
+        for i,item in enumerate(instruction['outline'],1):
+            page={'number':i,'title':'了解M22' if i==1 else '先确认的信息','text':'名称、资料与咨询问题。',
+                  'source_ids':['SHOP'],'pending':[]}
+            if item.get('kind')=='chat':
+                page['text']='顾客：第一次做要注意什么？\n门店：先到店面诊评估，以医生意见为准。'
+                page['dialog']=[{'speaker':'customer','text':'第一次做要注意什么？'},
+                                {'speaker':'shop','text':'先到店面诊评估，以医生意见为准。'}]
+            pages.append(page)
         result=Draft(title='第一次了解M22，先确认这些信息',body='先确认设备名称，再核对资料出处。',
-            pages=[{'number':i+1,'title':'了解M22' if i==0 else '先确认的信息','text':'名称、资料与咨询问题。',
-                    'source_ids':['SHOP'],'pending':[]} for i,_ in enumerate(instruction['outline'])],missing_information=[])
+            pages=pages,missing_information=[])
     elif schema is CaseRanking:
         question=instruction.get('question','')
         if '咖啡拉花' in question:
@@ -144,28 +152,60 @@ class StudioTests(unittest.TestCase):
     @patch('studio.llm.generate',side_effect=fake_generate)
     def test_ai_background_render_and_fallback(self,mock):
         t=self.ready()
-        # 未配置画图轨：确认页面自动降级纯色底，不阻断流程
-        t=self.post(t,'/pages/1',title=t['draft']['pages'][0]['title'],text=t['draft']['pages'][0]['text'],confirmed=True)
+        # 选"AI 底图"样式但未配置画图轨：自动降级纯色底，不阻断流程
+        t=self.post(t,'/pages/1',title=t['draft']['pages'][0]['title'],text=t['draft']['pages'][0]['text'],confirmed=True,card_theme='ai')
         self.assertEqual(t['renders']['1']['method'],'plain_fallback_layout')
+        self.assertEqual(t['renders']['1']['background_source'],'plain')
         # 配置画图轨后：AI 底图成功，标记为合成渲染并保留底图记录
         with patch('studio.llm.generate_background',return_value=picture()),\
              patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}):
-            t=self.post(t,'/pages/2',title=t['draft']['pages'][1]['title'],text=t['draft']['pages'][1]['text'],confirmed=True)
+            t=self.post(t,'/pages/2',title=t['draft']['pages'][1]['title'],text=t['draft']['pages'][1]['text'],confirmed=True,card_theme='ai')
         self.assertEqual(t['renders']['2']['method'],'ai_background_composited')
         self.assertEqual(t['renders']['2']['background_source'],'ai_new')
         self.assertIn('2',t['backgrounds'])
         self.assertTrue((api.DATA/'backgrounds'/t['id']/t['backgrounds']['2']['file']).exists())
 
     @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_text_card_default_program_theme(self,mock):
+        t=self.ready()
+        # 默认样式：程序版式，不调用画图轨
+        t=self.post(t,'/pages/1',title=t['draft']['pages'][0]['title'],text=t['draft']['pages'][0]['text'],confirmed=True)
+        self.assertEqual(t['renders']['1']['method'],'program_minimal')
+        self.assertEqual(t['renders']['1']['theme'],'minimal')
+        self.assertIsNone(t['renders']['1']['background_source'])
+        self.assertNotIn('1',t.get('backgrounds',{}))
+        t=self.post(t,'/pages/1',title='标题',text='内容',confirmed=True,card_theme='soft')
+        self.assertEqual(t['renders']['1']['method'],'program_soft')
+        t=self.post(t,'/pages/1',title='标题',text='内容',confirmed=True,card_theme='duotone')
+        self.assertEqual(t['renders']['1']['method'],'program_duotone')
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_chat_page_renders_wechat_dialog(self,mock):
+        t=self.create();t=self.post(t,'/analyze')
+        analysis=t['analysis'];analysis['outline'][1]['kind']='chat'
+        t=self.post(t,'/confirm-analysis',analysis=analysis)
+        t=self.post(t,'/draft')
+        # 草稿为对话页生成 dialog 轮次
+        self.assertEqual(t['draft']['pages'][1]['dialog'][0]['speaker'],'customer')
+        chat_text='顾客：第一次做M22要注意什么？\n门店：先到店面诊评估，孕期或光敏体质要提前告知医生。'
+        t=self.post(t,'/pages/2',title='顾客咨询',text=chat_text,confirmed=True)
+        self.assertEqual(t['renders']['2']['method'],'wechat_dialog')
+        self.assertEqual(t['draft']['pages'][1]['dialog'][1]['text'],'先到店面诊评估，孕期或光敏体质要提前告知医生。')
+        # 格式不合格：没有两轮对话时明确报错
+        r=self.client.post('/api/tasks/'+t['id']+'/pages/2',json={'revision':t['revision'],
+            'title':'顾客咨询','text':'只有一句没有前缀的话','confirmed':True})
+        self.assertEqual(r.status_code,422)
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
     def test_background_regen_failure_marks_stale(self,mock):
         t=self.ready()
         with patch('studio.llm.generate_background',return_value=picture()),\
              patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}):
-            t=self.post(t,'/pages/1',title='封面',text='内容',confirmed=True)
+            t=self.post(t,'/pages/1',title='封面',text='内容',confirmed=True,card_theme='ai')
             self.assertEqual(t['renders']['1']['background_source'],'ai_new')
             # 用户要求重新生成但画图失败：保留旧底图继续渲染，标记 ai_stale 而非静默复用
             with patch('studio.llm.generate_background',side_effect=RuntimeError('画图服务超时')):
-                t=self.post(t,'/pages/1',title='封面',text='内容',confirmed=True,regenerate_background=True)
+                t=self.post(t,'/pages/1',title='封面',text='内容',confirmed=True,regenerate_background=True,card_theme='ai')
         self.assertEqual(t['renders']['1']['background_source'],'ai_stale')
         self.assertEqual(t['renders']['1']['method'],'ai_background_composited')
         self.assertTrue(any(f['action']=='generate_background' for f in t['failures']))

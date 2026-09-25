@@ -27,7 +27,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20260924-2'
+VERSION='cases-20260925-1'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 MAX_VISION_PAGES=12  # 视觉轨单次看图上限：配合 llm.py 的 token 预算，超过则降级文字轨
 if len(TOKEN)<24:raise RuntimeError('请使用启动脚本，或配置至少24字符的STUDIO_ACCESS_TOKEN')
@@ -420,44 +420,64 @@ def make_page(task_id:str,number:int,body:PageEdit):
         asset=task['assets'].get(str(number))
         if not asset:raise HTTPException(409,'本页需要实拍，请先保存照片')
         raw=(DATA/'assets'/task_id/asset['file']).read_bytes()
-    if outline['kind']=='text' and not (body.title.strip() or body.text.strip()):raise HTTPException(422,'文字卡不能空白')
-    # 文字卡底图：AI 生成装饰底图（不含文字），生成失败自动降级纯色底，不阻断流程
-    # background_source 记录底图实际来源：ai_new=本次新生成；ai_reused=沿用已生成的；
-    # ai_stale=用户要求重新生成但失败，仍用旧图（界面要提示）；plain=纯色降级
+    if outline['kind'] in ('text','chat') and not (body.title.strip() or body.text.strip()):
+        raise HTTPException(422,'卡片不能空白')
+    total=len(task['draft']['pages'])
+    background_source=None
     bg_bytes=None
-    background_source='plain' if outline['kind']=='text' else None
-    if outline['kind']=='text':
-        task.setdefault('backgrounds',{})
-        entry=task['backgrounds'].get(str(number))
-        regenerated=False
-        if body.regenerate_background or not entry:
-            spec=outline.get('visual_spec','')
-            bg_prompt=prompts.BACKGROUND.format(spec=spec or prompts.BACKGROUND_DEFAULT_SPEC)
-            try:
-                data=llm.generate_background(bg_prompt)
-                folder=DATA/'backgrounds'/task_id;folder.mkdir(parents=True,exist_ok=True)
-                filename=f'{number:02d}_{uuid4().hex[:8]}.img'
-                (folder/filename).write_bytes(data)
-                entry={'file':filename,'spec':spec,'generated_at':datetime.now(timezone.utc).isoformat()}
-                task['backgrounds'][str(number)]=entry
-                regenerated=True
-            except Exception as exc:
-                task.setdefault('failures',[]).append({'action':'generate_background','error_type':type(exc).__name__,
-                                                       'detail':str(exc)[:300],
-                                                       'time':datetime.now(timezone.utc).isoformat()})
-        if entry:
-            bg_path=DATA/'backgrounds'/task_id/entry['file']
-            if bg_path.exists():
-                bg_bytes=bg_path.read_bytes()
-                background_source='ai_new' if regenerated else ('ai_stale' if body.regenerate_background else 'ai_reused')
-    try:rendered,meta=rendering.render(body.title,body.text,raw,background=bg_bytes,
-                                       page=number,total_pages=len(task['draft']['pages']))
+    try:
+        if outline['kind']=='chat':
+            # 对话卡：每行"顾客：…"或"门店：…"，程序绘制微信聊天样式；无需底图
+            dialog=rendering.parse_dialog(body.text)
+            if not dialog and not (body.text or '').strip():
+                # 文本为空时才沿用模型生成的对话轮次；填了文本但格式不对会被下面拦下
+                dialog=[{'speaker':t['speaker'],'text':t['text']} for t in page.get('dialog',[])]
+            if len(dialog)<2:
+                raise HTTPException(422,'对话卡每行一条"顾客：…"或"门店：…"，至少两轮')
+            rendered,meta=rendering.render_chat(body.title,dialog,page=number,total_pages=total)
+        else:
+            # 文字卡底图：仅当用户选择"AI 底图"样式时才调用画图轨；
+            # 默认走程序版式（简约留白/柔和卡片/双色几何），生成失败自动降级纯色底，不阻断流程
+            background_source=None
+            if outline['kind']=='text' and body.card_theme=='ai':
+                task.setdefault('backgrounds',{})
+                entry=task['backgrounds'].get(str(number))
+                regenerated=False
+                if body.regenerate_background or not entry:
+                    spec=outline.get('visual_spec','')
+                    bg_prompt=prompts.BACKGROUND.format(spec=spec or prompts.BACKGROUND_DEFAULT_SPEC)
+                    try:
+                        data=llm.generate_background(bg_prompt)
+                        folder=DATA/'backgrounds'/task_id;folder.mkdir(parents=True,exist_ok=True)
+                        filename=f'{number:02d}_{uuid4().hex[:8]}.img'
+                        (folder/filename).write_bytes(data)
+                        entry={'file':filename,'spec':spec,'generated_at':datetime.now(timezone.utc).isoformat()}
+                        task['backgrounds'][str(number)]=entry
+                        regenerated=True
+                    except Exception as exc:
+                        task.setdefault('failures',[]).append({'action':'generate_background','error_type':type(exc).__name__,
+                                                               'detail':str(exc)[:300],
+                                                               'time':datetime.now(timezone.utc).isoformat()})
+                if entry:
+                    bg_path=DATA/'backgrounds'/task_id/entry['file']
+                    if bg_path.exists():
+                        bg_bytes=bg_path.read_bytes()
+                        background_source='ai_new' if regenerated else ('ai_stale' if body.regenerate_background else 'ai_reused')
+                if bg_bytes is None:
+                    background_source='plain'
+            rendered,meta=rendering.render(body.title,body.text,raw,background=bg_bytes,
+                                           page=number,total_pages=total,
+                                           theme=None if outline['kind']!='text' or body.card_theme in ('ai','plain') else body.card_theme)
+    except HTTPException:raise
     except ValueError as exc:raise HTTPException(422,str(exc)) from None
     folder=DATA/'cards'/task_id;folder.mkdir(parents=True,exist_ok=True)
     filename=f'{number:02d}_{uuid4().hex}.png';path=folder/filename;path.write_bytes(rendered)
     page.update(title=body.title,text=body.text)
+    if outline['kind']=='chat':
+        page['dialog']=[{'speaker':t['speaker'],'text':t['text']} for t in dialog]
     task['renders'][str(number)]={'file':filename,'sha256':hashlib.sha256(rendered).hexdigest(),
-                                  'background_source':background_source,**meta}
+                                  'background_source':background_source,
+                                  'theme':body.card_theme if outline['kind']=='text' else None,**meta}
     task['page_reviews'][str(number)]={'confirmed':True,'resolution':body.resolution,'pending_at_review':page['pending'],
                                       'time':datetime.now(timezone.utc).isoformat()}
     task.update(stage='making',copy_review=None)

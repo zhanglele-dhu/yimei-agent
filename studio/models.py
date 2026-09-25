@@ -39,17 +39,22 @@ class ObservedPageCompact(BaseModel):
     borrow: str = Field(default='', description='这一页可借鉴的组织方式，20字内')
     uncertainty: str = Field(default='', description='不确定之处，没有则留空')
 
+class DialogTurn(BaseModel):
+    """微信对话卡的一轮发言。speaker：customer=顾客（左侧白泡），shop=门店（右侧绿泡）。"""
+    speaker: Literal['customer', 'shop']
+    text: str = Field(min_length=1, max_length=300)
+
 class OutlinePage(BaseModel):
-    kind: Literal['text', 'photo']
+    kind: Literal['text', 'photo', 'chat']
     purpose: str
     instruction: str
     visual_spec: str = Field(default='', max_length=600)
     source_pages: list[int] = Field(min_length=1)
 
 class OutlinePageCompact(BaseModel):
-    kind: Literal['text', 'photo'] = Field(description='页面类型：text=文字卡，photo=实拍页')
+    kind: Literal['text', 'photo', 'chat'] = Field(description='页面类型：text=文字卡，photo=实拍页，chat=微信对话卡')
     purpose: str = Field(description='这一页要讲什么，15字内')
-    instruction: str = Field(default='', description='制作或拍摄说明，20字内')
+    instruction: str = Field(description='制作或拍摄说明，20字内')
     visual_spec: str = Field(default='', description='底图视觉风格描述，30字内，不提任何文字内容')
     source_pages: list[int] = Field(min_length=1, description='借鉴的原帖页码数组')
 
@@ -59,6 +64,8 @@ class OutlinePageCompact(BaseModel):
         """视觉模型常用中文填 kind，统一映射回枚举值。"""
         if isinstance(v, str):
             s = v.strip().lower()
+            if any(w in s for w in ('对话', '聊天', '微信', 'chat')):
+                return 'chat'
             if any(w in s for w in ('实拍', '照片', '图片', 'photo', '拍照')):
                 return 'photo'
             if any(w in s for w in ('文字', '文本', 'text', '清单', '卡')):
@@ -173,6 +180,7 @@ class PageContent(BaseModel):
     text: str = Field(max_length=700)
     source_ids: list[str] = Field(default_factory=list)
     pending: list[str] = Field(default_factory=list)
+    dialog: list[DialogTurn] = Field(default_factory=list)
 
 class Draft(BaseModel):
     title: str = Field(min_length=1, max_length=100)
@@ -182,10 +190,11 @@ class Draft(BaseModel):
 
 class PageEdit(Revision):
     title: str = Field(max_length=60)
-    text: str = Field(max_length=700)
+    text: str = Field(max_length=2000)
     confirmed: bool
     resolution: str = Field(default='', max_length=2000)
     regenerate_background: bool = False
+    card_theme: Literal['minimal', 'soft', 'duotone', 'ai', 'plain'] = 'minimal'
 
 class CopyEdit(Revision):
     title: str = Field(min_length=1, max_length=100)

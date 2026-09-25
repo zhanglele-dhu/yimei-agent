@@ -575,13 +575,7 @@ function renderWritingStage(parent) {
   const outlineEditor = item => {
     const box = el('article', undefined, 'outline-page');
     box.append(el('h3', '新内容第 ' + (edits.length + 1) + ' 页'));
-    const kind = el('select');
-    [['text', '纯文字卡：直接排版'], ['photo', '实拍页：上传自己的照片']].forEach(([value, label]) => {
-      const option = el('option', label);
-      option.value = value;
-      kind.append(option);
-    });
-    kind.value = item.kind;
+    const kind = kindOptions(item.kind);
     const kindLabel = el('label', '页面类型');
     kindLabel.append(kind);
     box.append(kindLabel);
@@ -759,7 +753,7 @@ async function renderModes() {
   } else if (task.confirmed_analysis) {
     if (task.case) sourceCard(main);
     main.append(el('h3', '拆解已确认'));
-    task.confirmed_analysis.outline.forEach((item, index) => main.append(el('p', String(index + 1) + '. ' + (item.kind === 'text' ? '文字卡' : '实拍页') + '：' + item.purpose)));
+    task.confirmed_analysis.outline.forEach((item, index) => main.append(el('p', String(index + 1) + '. ' + (PAGE_KIND_LABELS[item.kind] || item.kind) + '：' + item.purpose)));
     main.append(button('生成逐页草稿，进入共创', generateDraft));
   } else {
     await renderStageFlow(main);
@@ -814,6 +808,33 @@ async function renderLegacy() {
   screen.append(heading, panel);
 }
 
+const PAGE_KIND_LABELS = { text: '文字卡', photo: '实拍页', chat: '对话卡' };
+
+function chatPrefill(page) {
+  if (Array.isArray(page.dialog) && page.dialog.length) {
+    return page.dialog.map(t => (t.speaker === 'customer' ? '顾客：' : '门店：') + t.text).join('\n');
+  }
+  return page.text || '';
+}
+
+function rendering_dialogLooksValid(text) {
+  const lines = (text || '').split('\n').map(l => l.trim()).filter(Boolean);
+  const customer = lines.some(l => /^(顾客|顾|客户|买家|对方|客人|Q|问)[:：]/.test(l));
+  const shop = lines.some(l => /^(门店|店|我方|我|商家|机构|A|答)[:：]/.test(l));
+  return customer && shop;
+}
+
+function kindOptions(kind) {
+  const select = el('select');
+  [['text', '纯文字卡：直接排版'], ['photo', '实拍页：上传自己的照片'], ['chat', '对话卡：微信聊天样式']].forEach(([value, label]) => {
+    const option = el('option', label);
+    option.value = value;
+    select.append(option);
+  });
+  select.value = kind;
+  return select;
+}
+
 async function renderCreate() {
   const screen = $('create');
   screen.replaceChildren();
@@ -860,13 +881,14 @@ async function renderCreate() {
   source.append(el('b', '本页参考'), el('p', '小红书案例：' + (task.case?.title || '已选案例')), el('p', '借鉴原帖第 ' + outline.source_pages.join('、') + ' 页'));
   side.append(source);
   const panel = el('div', undefined, 'panel');
-  panel.append(el('h2', '第 ' + number + ' / ' + pages.length + ' 页 · ' + (outline.kind === 'text' ? '文字卡' : '实拍页')));
+  panel.append(el('h2', '第 ' + number + ' / ' + pages.length + ' 页 · ' + (PAGE_KIND_LABELS[outline.kind] || outline.kind)));
   panel.append(el('p', outline.purpose), el('p', outline.instruction, 'muted'));
   const refs = el('div', undefined, 'thumb-row');
   for (const sourcePage of outline.source_pages) {
     await imageInto(refs, '/tasks/' + task.id + '/reference/' + sourcePage, '参考原帖第' + sourcePage + '页');
   }
   panel.append(el('div', '参考原帖第 ' + outline.source_pages.join('、') + ' 页', 'source-link'), refs);
+  let themeSelect = null;
   if (outline.kind === 'photo') {
     const asset = task.assets[String(number)];
     if (asset) {
@@ -890,13 +912,23 @@ async function renderCreate() {
       await refreshLists();
       await render();
     }, 'btn quiet'));
+  } else if (outline.kind === 'chat') {
+    panel.append(el('div', '这是对话卡：按微信聊天样式排版（程序绘制，保证文字准确）。每行一条——"顾客：…"显示在左侧白色气泡，"门店：…"显示在右侧绿色气泡。', 'future-box'));
   } else {
-    panel.append(el('div', '这是文字卡：AI 生成装饰底图，标题和文字由程序排版叠加，保证内容准确。底图生成失败时自动使用纯色底。', 'future-box'));
+    panel.append(el('div', '文字卡样式默认用程序版式（不调用画图模型、秒出图）；选择"AI 底图"才会生成 AI 装饰底图。', 'future-box'));
+    themeSelect = field(panel, '卡片样式', '', 'select');
+    [['minimal', '简约留白'], ['soft', '柔和卡片'], ['duotone', '双色几何'], ['ai', 'AI 底图'], ['plain', '纯色']].forEach(([value, label]) => {
+      const option = el('option', label);
+      option.value = value;
+      themeSelect.append(option);
+    });
+    themeSelect.value = task.renders?.[String(number)]?.theme || 'minimal';
   }
-  const pageTitle = field(panel, '本页标题（可以修改）', page.title, 'input');
+  const pageTitle = field(panel, outline.kind === 'chat' ? '对话标题（显示在聊天顶栏）' : '本页标题（可以修改）', page.title, 'input');
   pageTitle.maxLength = 60;
-  const pageText = field(panel, '本页文字（可以修改）', page.text);
-  pageText.maxLength = 700;
+  const pageText = field(panel, outline.kind === 'chat' ? '对话内容（每行一条：顾客：… / 门店：…，至少两轮）' : '本页文字（可以修改）',
+    outline.kind === 'chat' ? chatPrefill(page) : page.text);
+  pageText.maxLength = outline.kind === 'chat' ? 2000 : 700;
   if (page.pending?.length) panel.append(el('p', '本页待核实：' + page.pending.join('；'), 'review'));
   const resolution = field(panel, '有待核实内容时：填写依据，或说明删除了哪些未证实表述', task.page_reviews?.[String(number)]?.resolution || '');
   const confirmed = check(panel, '我已核对文字，未核实内容已补依据或移除');
@@ -904,23 +936,31 @@ async function renderCreate() {
   pageTitle.addEventListener('input', () => { dirty = true; });
   pageText.addEventListener('input', () => { dirty = true; });
   const actions = el('div', undefined, 'page-actions');
+  const editBody = extra => ({
+    title: pageTitle.value, text: pageText.value,
+    ...(themeSelect ? { card_theme: themeSelect.value } : {}), ...extra
+  });
   actions.append(
-    button('保存文字草稿', () => mutate('/pages/' + number, { title: pageTitle.value, text: pageText.value, confirmed: false, resolution: resolution.value }), 'btn quiet'),
+    button('保存文字草稿', () => mutate('/pages/' + number, editBody({ confirmed: false, resolution: resolution.value })), 'btn quiet'),
     button('确认并生成本页图片', async () => {
       if (!confirmed.checked) throw new Error('请先勾选文字确认');
-      await mutate('/pages/' + number, { title: pageTitle.value, text: pageText.value, confirmed: true, resolution: resolution.value });
+      if (outline.kind === 'chat' && !rendering_dialogLooksValid(pageText.value)) {
+        throw new Error('对话卡每行一条"顾客：…"或"门店：…"，至少各一轮');
+      }
+      await mutate('/pages/' + number, editBody({ confirmed: true, resolution: resolution.value }));
       const src = task.renders?.[String(number)]?.background_source;
       if (src === 'ai_stale') showToast('底图重新生成失败，本页仍用上一张底图，可稍后再试');
       else if (src === 'plain') showToast('AI 底图生成失败，本页用纯色底；可点“重新生成底图”再试');
       else if (src === 'ai_new') showToast('AI 底图已生成');
+      else if (themeSelect && task.renders?.[String(number)]?.method?.startsWith('program_')) showToast('本页已按程序版式生成');
     })
   );
   if (task.renders?.[String(number)]) await imageInto(panel, '/tasks/' + task.id + '/pages/' + number + '/render', '本页成品预览');
-  if (outline.kind === 'text' && task.renders?.[String(number)]) {
+  if (outline.kind === 'text' && themeSelect?.value === 'ai' && task.renders?.[String(number)]) {
     actions.append(button('重新生成底图', () => {
       if (dirty) throw new Error('文字有改动，请先保存');
       if (!confirmed.checked) throw new Error('重新生成底图会重做本页图片，请先勾选确认');
-      return mutate('/pages/' + number, { title: pageTitle.value, text: pageText.value, confirmed: true, resolution: resolution.value, regenerate_background: true });
+      return mutate('/pages/' + number, editBody({ confirmed: true, resolution: resolution.value, regenerate_background: true }));
     }, 'btn quiet'));
   }
   panel.append(actions);
