@@ -532,7 +532,7 @@ function renderFactsStage(parent) {
     const details = el('details');
     details.append(el('summary', source.id + ' · ' + (source.type || '未标注类型')));
     const content = typeof source.content === 'string' ? source.content : JSON.stringify(source.content, null, 2);
-    details.append(el('pre', content.slice(0, 3000)));
+    details.append(el('pre', content.slice(0, 3000), 'scroll-pre'));
     parent.append(details);
   });
   if (task.analysis.missing_information.length) parent.append(el('p', 'AI 标出的缺少信息：' + task.analysis.missing_information.join('；'), 'review'));
@@ -804,7 +804,7 @@ async function renderLegacy() {
   heading.append(left, back);
   const panel = el('div', undefined, 'panel');
   panel.append(el('p', '这条任务使用旧版数据结构，不能在当前流程继续编辑。请新建任务使用案例资料包。', 'review'));
-  panel.append(el('pre', JSON.stringify({ request: task.request, plan: task.plan, draft: task.draft }, null, 2)));
+  panel.append(el('pre', JSON.stringify({ request: task.request, plan: task.plan, draft: task.draft }, null, 2), 'scroll-pre'));
   screen.append(heading, panel);
 }
 
@@ -1058,7 +1058,7 @@ async function renderExport() {
     traces: task.traces,
     failures: task.failures,
     generation_sources: task.generation_sources
-  }, null, 2)));
+  }, null, 2), 'scroll-pre'));
   screen.append(trace);
 }
 

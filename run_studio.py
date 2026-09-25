@@ -60,8 +60,8 @@ if __name__ == '__main__':
             try:
                 with urllib.request.urlopen('http://127.0.0.1:8010/healthz', timeout=1) as response:
                     import json
-                    if response.status == 200 and json.load(response).get('version') == 'cases-20260925-1':
-                        webbrowser.open('http://127.0.0.1:8010/?v=cases-20260925-1#token=' + os.environ['STUDIO_ACCESS_TOKEN'])
+                    if response.status == 200 and json.load(response).get('version') == 'cases-20260925-2':
+                        webbrowser.open('http://127.0.0.1:8010/?v=cases-20260925-2#token=' + os.environ['STUDIO_ACCESS_TOKEN'])
                         return
             except OSError:
                 time.sleep(0.5)

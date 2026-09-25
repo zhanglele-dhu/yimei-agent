@@ -13,7 +13,8 @@
 .source-card a{color:#216b55}
 .case-pages{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:16px 0}
 .case-page{border:1px solid #dbe7df;border-radius:10px;padding:12px;background:#fbfdfb}
-.case-page h3{font-size:13px;margin:0 0 8px}.case-page pre{max-height:150px;font-size:11px;background:#f4f7f3;padding:8px;border-radius:6px}
+.case-page h3{font-size:13px;margin:0 0 8px}.case-page pre{max-height:150px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:11px;background:#f4f7f3;padding:8px;border-radius:6px}
+.scroll-pre{max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word;font-size:11px;background:#f4f7f3;padding:10px;border-radius:8px}
 .step-state{font-size:11px;color:#6d8176;margin-top:6px}.step-state.done{color:#2e825d;font-weight:700}
 .page-actions{display:flex;flex-wrap:wrap;gap:9px;align-items:center;margin-top:18px}
 .page-actions button{margin:0}.danger{background:#fff0ec;color:#9a533e}.danger:hover{background:#ffe3db}
