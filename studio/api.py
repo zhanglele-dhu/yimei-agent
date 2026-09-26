@@ -28,7 +28,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20260926-3'
+VERSION='cases-20260926-4'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 STAGE_LABELS_ZH={'retrieval':'第1步检索','language':'第2步语言分析','visual':'第3步视觉分析','facts':'第4步事实资料','writing':'第5步写作规则'}
 MAX_VISION_PAGES=12  # 视觉轨单次看图上限：配合 llm.py 的 token 预算，超过则降级文字轨
@@ -214,19 +214,26 @@ def create(body: CreateTask):
     try:m=cases.load(BUNDLES,body.bundle_id)
     except (ValueError,FileNotFoundError):raise HTTPException(422,'请先导入并选择案例资料包') from None
     selected,selection=rank_and_select(m,body.project,body.question,body.audience)
-    task={'schema_version':2,'id':uuid4().hex,'revision':0,'request':body.model_dump(),
+    request_data=body.model_dump()
+    demo_facts_used=False
+    if not (request_data.get('facts') or '').strip():
+        # 门店事实为空时自动填入示例资料（带示例标记）：避免演示流程满屏"待核实"
+        request_data['facts']=prompts.DEMO_SHOP_FACTS
+        demo_facts_used=True
+    task={'schema_version':2,'id':uuid4().hex,'revision':0,'request':request_data,
           'case':selected,'selection':selection,'stage':'candidate' if selected else 'no_match',
           'analysis':None,'confirmed_analysis':None,'draft':None,'assets':{},'renders':{},'page_reviews':{},
           'page_index':0,'traces':[],'failures':[],'feedback':[],'history':[],
           'updated_at':datetime.now(timezone.utc).isoformat(),
           'analysis_stages':{name:{'status':'ready' if name=='retrieval' and selected else 'blocked'} for name in ANALYSIS_STAGES},
           'analysis_decisions':[]}
-    facts=body.facts or ''
+    facts=request_data['facts']
     # 先写日志事件（确定日志文件名随任务存库），再入库；否则第二次事件会另起新文件
     runlog.event(task,DATA,'创建任务',{
         '输入':[f'主题：{body.project}；受众：{body.audience}',
                 f'问题：{body.question}',
-                (f'门店事实（{len(facts)}字）：{facts[:200]}…' if len(facts)>200 else f'门店事实：{facts}')],
+                (f'门店事实（{len(facts)}字）：{facts[:200]}…' if len(facts)>200 else f'门店事实：{facts}')]
+               +(['⚠ 门店事实为空，已自动填入示例门店资料（正式使用请替换为真实信息）'] if demo_facts_used else []),
         '检索':[selection.get('reason',''),
                 f"方式：{selection.get('method','规则')}；相关候选 {selection.get('eligible_count',0)} 篇"]
                + ([f"评分前三：{'；'.join(str(i+1)+'.《'+item['title']+'》' for i,item in enumerate(selection['top3']))}"] if selection.get('top3') else [])

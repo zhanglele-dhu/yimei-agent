@@ -133,6 +133,25 @@ class StudioTests(unittest.TestCase):
         self.assertNotIn('catch(e){}await render()',script.text)
 
     @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_create_fills_demo_facts_when_empty(self,mock):
+        """门店事实为空时后端自动填入示例资料（带示例标记），避免满屏待核实。"""
+        from studio.prompts import DEMO_SHOP_FACTS
+        r=self.client.post('/api/tasks',json={'project':'M22','audience':'第一次了解的顾客','question':'M22仪器有什么区别',
+                                             'facts':'','bundle_id':self.bundle_id})
+        self.assertEqual(r.status_code,200,r.text)
+        t=r.json()
+        self.assertEqual(t['request']['facts'],DEMO_SHOP_FACTS)
+        self.assertIn('示例',t['request']['facts'])
+
+    def test_demo_facts_front_back_consistent(self):
+        """前端预填与后端兜底必须是同一份示例资料（防止两边漂移）。"""
+        from studio.prompts import DEMO_SHOP_FACTS
+        js=(Path(__file__).parent/'studio/static/app.js').read_text(encoding='utf-8')
+        for line in DEMO_SHOP_FACTS.splitlines():
+            if line.strip():
+                self.assertIn(line,js,f'示例资料行在前端缺失：{line[:30]}')
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
     def test_selection_and_no_match(self,mock):
         t=self.create();self.assertEqual(t['case']['id'],'row000');self.assertEqual(t['selection']['eligible_count'],2)
         self.assertEqual(t['selection']['method'],'llm_relevance_plus_likes')
