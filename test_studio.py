@@ -148,6 +148,19 @@ class StudioTests(unittest.TestCase):
         ranked=cases.combine_ranking(pool,{'a':4,'b':9,'c':8,'d':3})
         self.assertEqual([r['case']['id'] for r in ranked],['b','c','a'])
 
+    def test_launcher_netstat_parsing(self):
+        """启动器升级逻辑的 netstat 解析：命中监听行取 PID，忽略无关行。"""
+        import run_studio
+        sample='\r\n'.join([
+            '  协议  本地地址          外部地址        状态           PID',
+            '  TCP    127.0.0.1:8010         0.0.0.0:0              LISTENING       8744',
+            '  TCP    127.0.0.1:8011         0.0.0.0:0              LISTENING       9999',
+            '  TCP    192.168.1.5:139        0.0.0.0:0              LISTENING       4'])
+        self.assertEqual(run_studio._parse_listener_pid(sample,8010),8744)
+        self.assertEqual(run_studio._parse_listener_pid(sample,8011),9999)
+        self.assertIsNone(run_studio._parse_listener_pid(sample,9999))
+        self.assertIsNone(run_studio._parse_listener_pid('',8010))
+
     @patch('studio.llm.generate',side_effect=fake_generate)
     def test_ai_background_render_and_fallback(self,mock):
         t=self.ready()
