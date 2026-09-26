@@ -11,7 +11,7 @@ uv pip install --python .venv-studio/Scripts/python.exe -r requirements-studio.l
 .\.venv-studio\Scripts\python.exe run_studio.py
 ```
 
-文字轨：.env 内 LLM_PROVIDER=deepseek 与 DEEPSEEK_API_KEY。视觉/画图轨：VISION_PROVIDER=glm + VISION_API_KEY（智谱 open.bigmodel.cn 的 API Key，视觉与画图共用），可选 STUDIO_VISION_MODEL / STUDIO_IMAGE_MODEL 覆盖默认的 glm-4v-plus / cogview-4。视觉轨未配置时自动降级。不要提交.env。用户实拍仅保存及本地排版，本版本不发送任何模型。
+文字轨：.env 内 LLM_PROVIDER=deepseek 与 DEEPSEEK_API_KEY。视觉/画图轨：VISION_PROVIDER=glm + VISION_API_KEY（智谱 open.bigmodel.cn 的 API Key，视觉与画图共用）。视觉模型走梯队：默认主模型 glm-4.5v（.env 的 STUDIO_VISION_MODEL 可覆盖），主模型连续失败自动换备用 glm-4v-plus，再失败由文字轨修复结构或自动降级按文字拆解；glm-4v 系输出上限 2048，新模型 4096。画图轨默认 cogview-4（STUDIO_IMAGE_MODEL 可覆盖）。视觉轨未配置时自动降级。不要提交.env。用户实拍仅保存及本地排版，本版本不发送任何模型。
 
 任务与图片在outputs/studio；先备份该目录再迁移机器。多人共用口令会共用数据，本版是单工作区演示。
 
@@ -35,6 +35,6 @@ Dockerfile使用requirements-studio.lock.txt及当前studio、knowledge。配置
 
 刷新后恢复最近任务，或从任务列表选择；任务可删除（连同照片与成品图一起清除，删除前需确认）。仅已保存内容持久化在SQLite，照片和输出文件也必须一起备份。模型失败不自动循环调用，显示错误后手动重试；原任务不丢失。
 
-更新后先关闭旧启动窗口，再双击start_studio.bat。healthz应返回版本`cases-20260926-2`。启动器只在版本匹配时自动打开页面；不强制结束其他进程。
+更新后先关闭旧启动窗口，再双击start_studio.bat。healthz应返回版本`cases-20260926-3`。启动器只在版本匹配时自动打开页面；不强制结束其他进程。
 
 2026-09-17已真实调用DeepSeek跑通一条示例，完整运行证据在`outputs/studio/evidence/RUN-20260917_M22_demo/`。当前没有可用浏览器自动化界面，浏览器刷新/点击的实际体验仍待验收；API持久化与恢复已测。容器尚未构建验证。

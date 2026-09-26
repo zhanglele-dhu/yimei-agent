@@ -28,7 +28,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20260926-2'
+VERSION='cases-20260926-3'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 STAGE_LABELS_ZH={'retrieval':'第1步检索','language':'第2步语言分析','visual':'第3步视觉分析','facts':'第4步事实资料','writing':'第5步写作规则'}
 MAX_VISION_PAGES=12  # 视觉轨单次看图上限：配合 llm.py 的 token 预算，超过则降级文字轨
@@ -221,8 +221,8 @@ def create(body: CreateTask):
           'updated_at':datetime.now(timezone.utc).isoformat(),
           'analysis_stages':{name:{'status':'ready' if name=='retrieval' and selected else 'blocked'} for name in ANALYSIS_STAGES},
           'analysis_decisions':[]}
-    with db() as conn:conn.execute('INSERT INTO tasks VALUES (?,?,?)',(task['id'],0,json.dumps(task,ensure_ascii=False)))
     facts=body.facts or ''
+    # 先写日志事件（确定日志文件名随任务存库），再入库；否则第二次事件会另起新文件
     runlog.event(task,DATA,'创建任务',{
         '输入':[f'主题：{body.project}；受众：{body.audience}',
                 f'问题：{body.question}',
@@ -232,6 +232,7 @@ def create(body: CreateTask):
                + ([f"评分前三：{'；'.join(str(i+1)+'.《'+item['title']+'》' for i,item in enumerate(selection['top3']))}"] if selection.get('top3') else [])
                + ([f"打分调用：{runlog.trace_summary({'provider':selection['ranking_call'].get('provider'),'elapsed_ms':selection['ranking_call'].get('elapsed_ms'),'usage':selection['ranking_call'].get('usage'),'attempts':[{'outcome':o} for o in selection['ranking_call'].get('attempts',[])]})}"] if selection.get('ranking_call') else []),
         '结果':[('已选定案例：《'+task['case']['title']+'》（'+str(task['case'].get('likes'))+' 赞，'+str(len(task['case']['pages']))+'页）') if task['case'] else '没有相关案例（stage=no_match）']})
+    with db() as conn:conn.execute('INSERT INTO tasks VALUES (?,?,?)',(task['id'],0,json.dumps(task,ensure_ascii=False)))
     return task
 
 @app.get('/api/tasks/{task_id}',dependencies=[Depends(auth)])

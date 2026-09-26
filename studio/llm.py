@@ -34,6 +34,7 @@ SYSTEM_PROMPT = (
     '正文不堆来源标注或分析报告，资料依据单独记录。'
     '对话卡(content dialog)是门店编写的示意问答：不得虚构顾客身份、聊天记录截图来源；'
     '门店话术只能基于门店事实，不做疗效与价格承诺。'
+    '参考图可能是采集快照（如手机备忘录或编辑界面截图），如实按图中实际形态观察并标注form。'
     '不要输出内部思维链，只给简短理由和证据。'
 )
 
@@ -45,6 +46,23 @@ def _vision_enabled():
 
 def supports_vision():
     return _vision_enabled()
+
+
+def _vision_model_chain():
+    """视觉模型梯队：.env 指定的主模型优先，自动补梯队备用。
+    glm-4.5v 对结构化看图输出明显更强（真机实测，含备忘录截图案例），
+    glm-4v-plus 作为兜底；主模型连续失败时自动接替，不再单点依赖。"""
+    primary = os.getenv('STUDIO_VISION_MODEL', '').strip() or 'glm-4.5v'
+    chain = [primary]
+    for model in ('glm-4.5v', 'glm-4v-plus'):
+        if model not in chain:
+            chain.append(model)
+    return chain
+
+
+def _vision_max_tokens(model):
+    """glm-4v 系列输出上限 2048；glm-4.5v 等新模型支持更大输出（2048 会截断长 JSON）。"""
+    return 2048 if '4v' in model.lower() else 4096
 
 
 def _usage(result):
@@ -172,13 +190,13 @@ def _is_overload(exc):
 
 
 def generate_vision(schema, task, sources, images, outline_anchor=None):
-    """视觉轨：智谱 GLM-4V，参考图+文字输入。images: [{'number': int, 'data': bytes}]
-    注意：GLM-4V 的 max_tokens 上限 2048，调用方应传 *Compact 系列瘦身 schema。
+    """视觉轨：智谱视觉模型梯队（主 glm-4.5v，备用 glm-4v-plus），参考图+文字输入。
+    images: [{'number': int, 'data': bytes}]；调用方应传 *Compact 系列瘦身 schema。
     outline_anchor=原帖页数：跨模型修复时的大纲页数锚点。
-    token 预算：官方限制 输入+输出 ≤ 16384。输出固定 2048，输入按预算压缩——
-    每张图像素预算随图数递减（总图像 token ≈ 5k 内），文字资料同步收紧。
-    鲁棒性：超长(1210) → 图文各减半重试一次 → 占位符/格式坏 → 带图自我纠正一次
-    → 仍失败交 DeepSeek 修一次 → 才放弃。每类都是有限次，不循环。"""
+    token 预算：输入按每张图像素预算压缩（总 ~4.2M 像素），文字资料随图数收紧；
+    输出上限按模型区分（glm-4v 系 2048，新模型 4096，防止长 JSON 被截断）。
+    鲁棒性（每类有限次，不循环）：单模型 解析→带图自纠 → 换备用模型再来一轮
+    → 仍失败交 DeepSeek 修结构 → 才放弃；任一轮撞 1210 超限自动压图重发。"""
     if not _vision_enabled():
         raise RuntimeError('视觉轨未配置（需要 VISION_PROVIDER=glm 和 VISION_API_KEY）')
     from openai import OpenAI
@@ -224,9 +242,6 @@ def generate_vision(schema, task, sources, images, outline_anchor=None):
     prompt = build_prompt(text_budget)
     client = OpenAI(api_key=os.environ['VISION_API_KEY'], base_url='https://open.bigmodel.cn/api/paas/v4',
                     timeout=180, max_retries=0)
-    model = os.getenv('STUDIO_VISION_MODEL', 'glm-4v-plus')
-    messages = [{'role': 'system', 'content': SYSTEM_PROMPT},
-                {'role': 'user', 'content': build_content(pixel_budget, text_budget)}]
     attempts = []
     total_usage = {'prompt_tokens': 0, 'completion_tokens': 0}
 
@@ -248,14 +263,14 @@ def generate_vision(schema, task, sources, images, outline_anchor=None):
             out.append(m)
         return out
 
-    def call(msgs, outcome_label):
+    def call(msgs, outcome_label, model, max_tokens):
         def do_call(m, label):
             t0 = time.monotonic()
-            res = client.chat.completions.create(model=model, max_tokens=2048, messages=m)
+            res = client.chat.completions.create(model=model, max_tokens=max_tokens, messages=m)
             usage = _usage(res)
             total_usage['prompt_tokens'] += usage.get('prompt_tokens') or 0
             total_usage['completion_tokens'] += usage.get('completion_tokens') or 0
-            attempts.append({'try': len(attempts) + 1, 'provider': 'glm-vision', 'outcome': label,
+            attempts.append({'try': len(attempts) + 1, 'provider': 'glm-vision/' + model, 'outcome': label,
                              'usage': usage, 'elapsed_ms': round((time.monotonic() - t0) * 1000)})
             return res.choices[0].message.content or ''
         try:
@@ -293,25 +308,38 @@ def generate_vision(schema, task, sources, images, outline_anchor=None):
             return None, ValueError(f'original_pages 必须恰好 {len(images)} 条（每张参考图一条），当前输出了 {len(parsed.original_pages)} 条')
         return (parsed, sanitized), None
 
-    raw = call(messages, 'parse')
-    parsed, err = parse_ok(raw)
+    raw = None
+    last_err = None
+    model_used = None
+    # 模型梯队：每个模型一轮"解析→带图自纠"，主模型整轮失败自动换备用，最后才交 DeepSeek 修结构
+    for tier_model in _vision_model_chain():
+        max_tokens = _vision_max_tokens(tier_model)
+        model_used = tier_model
+        messages = [{'role': 'system', 'content': SYSTEM_PROMPT},
+                    {'role': 'user', 'content': build_content(pixel_budget, text_budget)}]
+        for phase in ('parse', 'self_correct'):
+            raw = call(messages, phase, tier_model, max_tokens)
+            parsed, err = parse_ok(raw)
+            if parsed is not None:
+                break
+            last_err = err
+            # 带图自我纠正：把上次的输出和错误发回去，让看过图的模型自己改
+            messages = messages + [
+                {'role': 'assistant', 'content': raw[:1500]},
+                {'role': 'user', 'content': f'你上面的输出不合格：{str(err)[:300]}。'
+                 '不要复制示例值，必须替换成你从参考图中看到的真实内容，重新只输出一个JSON。'}]
+        if parsed is not None:
+            break
     if parsed is None:
-        # 带图自我纠正一次：把上次的输出和错误发回去，让看过图的模型自己改
-        messages = messages + [
-            {'role': 'assistant', 'content': raw[:1500]},
-            {'role': 'user', 'content': f'你上面的输出不合格：{str(err)[:300]}。'
-             '不要复制示例值，必须替换成你从参考图中看到的真实内容，重新只输出一个JSON。'}]
-        raw2 = call(messages, 'self_correct')
-        parsed, err2 = parse_ok(raw2)
+        # 梯队全部失败：交 DeepSeek 修结构（不循环）
+        fixed = _repair_json(raw, str(last_err), outline_anchor=outline_anchor)
+        attempts.append({'try': len(attempts) + 1, 'provider': 'deepseek-repair', 'outcome': 'cross_model_repair'})
+        parsed, err3 = parse_ok(fixed)
         if parsed is None:
-            # 最后一次机会：交 DeepSeek 修结构（不循环）
-            fixed = _repair_json(raw2, str(err2), outline_anchor=outline_anchor)
-            attempts.append({'try': len(attempts) + 1, 'provider': 'deepseek-repair', 'outcome': 'cross_model_repair'})
-            parsed, err3 = parse_ok(fixed)
-            if parsed is None:
-                raise err3 or err2 or err
+            raise err3 or last_err
     parsed, sanitized_count = parsed
     trace = _trace_fields('glm-vision', SYSTEM_PROMPT, prompt, parsed, images)
+    trace['vision_model'] = model_used
     trace.update({'placeholder_sanitized': sanitized_count, 'attempts': attempts, 'usage': total_usage,
                   'elapsed_ms': sum(a.get('elapsed_ms') or 0 for a in attempts)})
     return parsed, trace

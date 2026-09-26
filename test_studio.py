@@ -148,8 +148,48 @@ class StudioTests(unittest.TestCase):
         ranked=cases.combine_ranking(pool,{'a':4,'b':9,'c':8,'d':3})
         self.assertEqual([r['case']['id'] for r in ranked],['b','c','a'])
 
+    def test_vision_model_chain_and_tokens(self):
+        """视觉梯队：.env 主模型优先，自动补备用；glm-4v 系 2048、新模型 4096。"""
+        with patch.dict(os.environ,{'STUDIO_VISION_MODEL':'glm-4.5v'}):
+            self.assertEqual(llm._vision_model_chain(),['glm-4.5v','glm-4v-plus'])
+        with patch.dict(os.environ,{'STUDIO_VISION_MODEL':''}):
+            self.assertEqual(llm._vision_model_chain()[0],'glm-4.5v')
+        with patch.dict(os.environ,{'STUDIO_VISION_MODEL':'glm-4v-plus'}):
+            self.assertEqual(llm._vision_model_chain(),['glm-4v-plus','glm-4.5v'])
+        self.assertEqual(llm._vision_max_tokens('glm-4v-plus'),2048)
+        self.assertEqual(llm._vision_max_tokens('glm-4.5v'),4096)
+
+    def test_vision_tier_fallback_to_backup_model(self):
+        """主模型连续输出坏结构时，自动换备用模型并成功。"""
+        good=json.dumps({'summary':'备忘录截图科普','original_pages':[{'number':1,'form':'备忘录截图','observation':'文字清单',
+                         'ocr_quote':'','borrow':'逐条罗列'}],'borrow':['编号列表'],'missing_information':[],
+                         'outline':[{'kind':'text','purpose':'封面提问','instruction':'制作封面','source_pages':[1]}]},ensure_ascii=False)
+        bad='{"summary":"x","original_pages":[],"borrow":[],"missing_information":[],"outline":[]}'
+        calls=[]
+        class _Resp:
+            def __init__(self,content):
+                self.choices=[type('C',(),{'message':type('M',(),{'content':content})()})()]
+                self.usage=type('U',(),{'prompt_tokens':10,'completion_tokens':5})()
+        class _Comp:
+            def create(self,**kw):
+                calls.append((kw.get('model'),kw.get('max_tokens')))
+                return _Resp(good if kw.get('model')=='glm-4.5v' else bad)
+        class _Client:
+            def __init__(self,**kw):self.chat=type('Chat',(),{'completions':_Comp()})()
+        big=io.BytesIO();Image.new('RGB',(800,1000),'#3a6ea5').save(big,format='PNG');big=big.getvalue()
+        with patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key',
+                                    'STUDIO_VISION_MODEL':'glm-4v-plus'}),\
+             patch('openai.OpenAI',_Client):
+            parsed,trace=llm.generate_vision(AnalysisCompact,{'q':1},[],[{'number':1,'data':big}])
+        self.assertEqual(parsed.summary,'备忘录截图科普')
+        models_called=[m for m,_ in calls]
+        self.assertEqual(models_called,['glm-4v-plus','glm-4v-plus','glm-4.5v'])  # 主模型 parse+自纠 → 备用接替
+        self.assertEqual([a['provider'] for a in trace['attempts']][0],'glm-vision/glm-4v-plus')
+        self.assertEqual(trace['vision_model'],'glm-4.5v')
+        self.assertEqual(calls[0][1],2048)   # glm-4v 系输出上限 2048
+        self.assertEqual(calls[-1][1],4096)  # 新模型放宽到 4096
+
     def test_launcher_netstat_parsing(self):
-        """启动器升级逻辑的 netstat 解析：命中监听行取 PID，忽略无关行。"""
         import run_studio
         sample='\r\n'.join([
             '  协议  本地地址          外部地址        状态           PID',
@@ -298,6 +338,10 @@ class StudioTests(unittest.TestCase):
         self.post(t,'/copy',title=t['draft']['title'],body=t['draft']['body'],confirmed=True)
         r=self.client.get('/api/tasks/'+t['id']+'/export')
         self.assertEqual(r.status_code,200)
+        # 创建任务时日志文件名必须随任务入库（否则后续事件会另起新文件）
+        with api.db() as conn:
+            import json as _json
+            self.assertIn('runlog',_json.loads(conn.execute('SELECT body FROM tasks WHERE id=?',(t['id'],)).fetchone()[0]))
         logdir=api.DATA/'runlogs'
         mine=list(logdir.glob('*'+t['id'][:8]+'*.md'))
         self.assertEqual(len(mine),1)
@@ -359,7 +403,8 @@ class StudioTests(unittest.TestCase):
             parsed,trace=llm.generate_vision(AnalysisCompact,{'q':'问题'+'细'*8000},[],
                                              [{'number':1,'data':big}])
         self.assertEqual(parsed.summary,'实拍对比')
-        self.assertEqual([a['outcome'] for a in trace['attempts']],['parse_shrunk'])
+        self.assertEqual(len(trace['attempts']),1)
+        self.assertTrue(trace['attempts'][0]['outcome'].endswith('parse_shrunk'))
         def dims(call):
             url=call['messages'][1]['content'][0]['image_url']['url']
             with Image.open(io.BytesIO(base64.b64decode(url.split(',',1)[1]))) as im:return im.size
