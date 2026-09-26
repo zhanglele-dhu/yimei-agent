@@ -28,7 +28,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20260926-1'
+VERSION='cases-20260926-2'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 STAGE_LABELS_ZH={'retrieval':'第1步检索','language':'第2步语言分析','visual':'第3步视觉分析','facts':'第4步事实资料','writing':'第5步写作规则'}
 MAX_VISION_PAGES=12  # 视觉轨单次看图上限：配合 llm.py 的 token 预算，超过则降级文字轨
@@ -469,6 +469,12 @@ def draft(task_id:str,body:Revision):
         raise HTTPException(502,'生成页数与已确认大纲不一致，请手动重试')
     valid={s['id'] for s in sources_for(task)}
     if any(not set(p.source_ids)<=valid for p in result.pages):raise HTTPException(502,'生成内容引用了不存在的来源')
+    echo_notes=[]
+    for p in result.pages:
+        cleaned,changed=_strip_title_echo(p.title,p.text)
+        if changed:
+            p.text=cleaned
+            echo_notes.append(f'第{p.number}页正文开头复述了标题，已自动去除')
     if task['draft']:task['history'].append({'draft':task['draft'],'renders':task['renders'],'page_reviews':task['page_reviews']})
     task.update(draft=result.model_dump(),stage='making',renders={},page_reviews={},copy_review=None,page_index=0,
                 generation_sources=sources_for(task))
@@ -476,8 +482,37 @@ def draft(task_id:str,body:Revision):
         '调用':[runlog.trace_summary(task['traces'][-1])],
         '输出':[f'标题：{result.title}']
                +[f'第{p.number}页：{p.title[:24]}（{"；".join(p.pending)[:40] or "无待核实"}）' for p in result.pages]
-               +([f'整体待核实：{"；".join(result.missing_information)[:80]}'] if result.missing_information else [])})
+               +([f'整体待核实：{"；".join(result.missing_information)[:80]}'] if result.missing_information else [])
+               +echo_notes})
     return save(task,body.revision)
+
+def _norm_echo(s):
+    """标题回声比对用的归一化：去空白与常见标点，转小写。"""
+    return re.sub(r'[\s，。；：、！？“”‘’（）《》【】·…\-\.,;:!?"\'()]+', '', (s or '')).lower()
+
+
+def _strip_title_echo(title, text):
+    """草稿正文若以页面标题开头（模型写封面页的常见复述习惯，真机案例 20260926：
+    标题由程序排版绘制，正文又复述一遍导致成品重复），去掉开头的标题部分。
+    支持标题被拆成多行（如"第一次了解 M22"+"先弄清这几个问题"两行）。返回 (清理后文本, 是否清理)。"""
+    t = _norm_echo(title)
+    if not t or not (text or '').strip():
+        return text, False
+    lines = text.splitlines()
+    matched = ''
+    consumed = 0
+    for line in lines:
+        candidate = matched + line
+        cn = _norm_echo(candidate)
+        if cn and cn == t:
+            return text[consumed + len(line) + 1:].lstrip('\n'), True
+        if cn and t.startswith(cn):
+            matched = candidate
+            consumed += len(line) + 1
+            continue
+        break
+    return text, False
+
 
 def page_data(task,number):
     if not task.get('draft') or not 1<=number<=len(task['draft']['pages']):raise HTTPException(409,'请先生成有效的逐页草稿')

@@ -161,6 +161,39 @@ class StudioTests(unittest.TestCase):
         self.assertIsNone(run_studio._parse_listener_pid(sample,9999))
         self.assertIsNone(run_studio._parse_listener_pid('',8010))
 
+    def test_strip_title_echo(self):
+        """草稿正文开头复述标题（含拆成多行）时自动去除；正常内容不动。"""
+        f=api._strip_title_echo
+        # 用户真机案例：标题被拆成两行复述（"第一次了解 M22"+"先弄清这几个问题"）
+        cleaned,changed=f('第一次了解M22，先弄清这几个问题','第一次了解 M22\n先弄清这几个问题\n\n· 是哪台机器？')
+        self.assertTrue(changed);self.assertEqual(cleaned,'· 是哪台机器？')
+        # 单行复述
+        cleaned,changed=f('咨询清单','咨询清单\n先记录问题')
+        self.assertTrue(changed);self.assertEqual(cleaned,'先记录问题')
+        # 无复述：内容不动
+        cleaned,changed=f('咨询清单','先记录问题，再核对出处')
+        self.assertFalse(changed);self.assertEqual(cleaned,'先记录问题，再核对出处')
+        # 正文只是包含标题字样但不在开头：不动
+        cleaned,changed=f('咨询清单','关于咨询清单的说明\n先记录问题')
+        self.assertFalse(changed)
+        # 空标题/空正文
+        self.assertEqual(f('', '内容')[1],False);self.assertEqual(f('标题','')[1],False)
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_draft_generation_strips_title_echo(self,mock):
+        """草稿生成时的确定性去重：假模型复述标题，保存的草稿应已清理。"""
+        def echoing_generate(schema,instruction,sources,images=None,outline_anchor=None):
+            result,trace=fake_generate(schema,instruction,sources,images)
+            if schema is Draft:
+                for p in result.pages:
+                    p.text=p.title+'\n'+p.text
+            return result,trace
+        with patch('studio.llm.generate',side_effect=echoing_generate):
+            t=self.ready()
+        for p in t['draft']['pages']:
+            self.assertFalse(p['text'].startswith(p['title']))
+        self.assertIn(t['draft']['pages'][0]['text'][:6],t['draft']['pages'][0]['text'])
+
     @patch('studio.llm.generate',side_effect=fake_generate)
     def test_ai_background_render_and_fallback(self,mock):
         t=self.ready()
