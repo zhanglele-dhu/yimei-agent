@@ -208,6 +208,41 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(calls[0][1],2048)   # glm-4v 系输出上限 2048
         self.assertEqual(calls[-1][1],4096)  # 新模型放宽到 4096
 
+    def test_eval_harness_offline_run_and_report(self):
+        """评测器离线跑通：mock 模型下两道题全成功，报告与状态口径正确。"""
+        from studio import evals
+        questions = [{'id': 'q01', 'question': 'M22仪器有什么区别', 'audience': '第一次了解的顾客'},
+                     {'id': 'q02', 'question': '做完M22怎么护理', 'audience': '第一次了解的顾客'}]
+        with patch('studio.llm.generate', side_effect=fake_generate):
+            results = evals.run_suite(api, questions, os.environ['STUDIO_ACCESS_TOKEN'])
+        self.assertEqual([r['status'] for r in results], ['success', 'success'])
+        report, summary = evals.write_report(results, api.DATA / 'evals', label='离线验证')
+        self.assertEqual(summary['total'], 2)
+        self.assertEqual(summary['bad_case_rate'], 0.0)
+        self.assertTrue(report.exists())
+
+    def test_eval_classify_tags(self):
+        """三级标签：合同拒收/超长/降级/占位清洗各归其位。"""
+        from studio import evals
+        # 1) 模型调用失败带 1210 → token_budget
+        err = ValueError("Error code: 400 - {'error': {'code': '1210', 'message': '... 16384 ...'}}")
+        status, l1, l2, l3, _ = evals.classify({}, {'retrieval': True, 'analyze': False}, error=err)
+        self.assertEqual(status, 'bad_case');self.assertEqual(l1, 'analyze')
+        self.assertIn('token_budget', l3)
+        # 2) 视觉降级 → success_degraded + degraded_vision
+        task = {'case': {'title': 'x'}, 'analysis_basis': '视觉轨未完成，已自动降级按OCR+正文拆解', 'failures': []}
+        status, _, l2, l3, _ = evals.classify(task, {'retrieval': True, 'analyze': True, 'draft': True, 'make_page': True})
+        self.assertEqual(status, 'success_degraded');self.assertIn('degraded_vision', l2)
+        # 3) 大纲自动压缩 → page_count_drift；占位清洗 → placeholder_echo
+        task = {'case': {'title': 'x'}, 'analysis_basis': '原图+OCR+正文',
+                'analysis_polish': ['已删除占位页：x', '大纲 6 页超出原帖 2 页±1，已自动压缩为 3 页'], 'failures': []}
+        status, _, l2, _, _ = evals.classify(task, {'retrieval': True, 'analyze': True, 'draft': True, 'make_page': True})
+        self.assertEqual(status, 'success_degraded')
+        self.assertIn('placeholder_echo', l2);self.assertIn('page_count_drift', l2)
+        # 4) 无匹配案例 → data_quality
+        status, l1, l2, l3, _ = evals.classify({'case': None}, {'retrieval': False})
+        self.assertEqual(status, 'bad_case');self.assertIn('data_quality', l3)
+
     def test_launcher_netstat_parsing(self):
         import run_studio
         sample='\r\n'.join([

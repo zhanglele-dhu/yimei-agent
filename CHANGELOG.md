@@ -1,5 +1,16 @@
 # 当前工作台变更记录
 
+## 2026-10-10：评测地基（路线图第一步，让简历声明逐条成真）
+
+- 用户决策：不修改简历迁就现状，而是把旧简历虚构的能力真实建出来（路线图见 ROADMAP.md，五步：评测地基→知识库RAG→Agent自主编排→数据规模化→迭代收口）。
+- 本轮交付第①步评测地基：
+  - `studio/evals.py` 批量评测器：整条文字链路（创建→检索→拆解→五步确认→草稿→逐页文字卡确认）跑在题集上，单题失败不阻断整批；评测任务写临时目录，不污染真实任务数据。
+  - 三级 Bad Case 标签：L1 环节（retrieval/analyze/draft/make_page）、L2 现象（model_call_failed/contract_rejected/placeholder_echo/page_count_drift/degraded_vision/degraded_fallback）、L3 根因（model_capability/prompt_design/data_quality/token_budget/integration）。
+  - 诚实状态口径：success / success_degraded（发生过降级、占位清洗、大纲压缩等系统兜底，单列降级率不混算）/ bad_case；报告输出 JSON+MD 到 evals/。
+  - 题集 evals/questions_m22.json（10 题：对比/疼痛/疗程/护理/红血丝/面诊/价格/滤光片/敏感肌/超皮秒对比）。
+  - 真机基线未跑（产生真实 API 费用），命令见模块注释；跑完把数字记入 ROADMAP.md。
+- 版本 cases-20261010-1；33 项离线测试通过（新增评测器离线跑通+报告、三级标签分类两用例）。
+
 ## 2026-09-26（四）：完整版示例门店资料 + 空资料自动兜底
 
 - 用户决策：demo 场景要"完善的结果"，门店资料不允许为空。示例门店资料升级为完整版（前后端同一份文本，prompts.py 为权威源、app.js 预填同步，测试保证一致）：
