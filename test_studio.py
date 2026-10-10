@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import tempfile
 import unittest
 import zipfile
@@ -242,6 +243,54 @@ class StudioTests(unittest.TestCase):
         # 4) 无匹配案例 → data_quality
         status, l1, l2, l3, _ = evals.classify({'case': None}, {'retrieval': False})
         self.assertEqual(status, 'bad_case');self.assertIn('data_quality', l3)
+
+    def test_knowledge_chunk_and_store(self):
+        """知识库 v1：切片带重叠、存储读写往返、余弦检索排序正确。"""
+        from studio import knowledge as kb
+        # 切片：长文本切成多块，块间有重叠，块长不超上限
+        chunks = kb.chunk_text('字' * 1200)
+        self.assertGreater(len(chunks), 2)
+        self.assertTrue(all(len(c['text']) <= kb.DEFAULT_CHUNK_CHARS for c in chunks))
+        self.assertEqual(chunks[1]['text'][:kb.DEFAULT_CHUNK_OVERLAP],
+                         chunks[0]['text'][-kb.DEFAULT_CHUNK_OVERLAP:])  # 重叠区一致
+        self.assertEqual([c['pos'] for c in chunks], list(range(len(chunks))))
+        self.assertEqual(kb.chunk_text('短文本'), [{'text': '短文本', 'pos': 0}])
+        self.assertEqual(kb.chunk_text('   '), [])
+        with self.assertRaises(ValueError):
+            kb.chunk_text('x' * 100, size=50, overlap=50)
+        # 余弦：同向=1，正交=0
+        self.assertAlmostEqual(kb.cosine([1, 0], [2, 0]), 1.0)
+        self.assertAlmostEqual(kb.cosine([1, 0], [0, 3]), 0.0)
+        # 存储读写往返 + 检索排序
+        store = kb.KnowledgeStore()
+        store.add([{'text': '关于价格', 'pos': 0}, {'text': '关于护理', 'pos': 0}],
+                  [[1.0, 0.0], [0.0, 1.0]], source='测试文档')
+        self.assertEqual(len(store), 2)
+        store_dir = Path(api.DATA) / 'kb-test'
+        store.save(store_dir)
+        loaded = kb.KnowledgeStore.load(store_dir)
+        hits = loaded.search([1.0, 0.0], top_k=2)
+        self.assertEqual(hits[0]['text'], '关于价格')
+        self.assertEqual(hits[0]['meta']['source'], '测试文档')
+        self.assertEqual(hits[1]['text'], '关于护理')
+        shutil.rmtree(store_dir, ignore_errors=True)
+
+    def test_knowledge_build_from_files(self):
+        """从文件建库：切片数与来源归属正确（向量化打桩）。"""
+        from studio import knowledge as kb
+        src = Path(api.DATA) / 'kb-src'
+        src.mkdir(parents=True, exist_ok=True)
+        (src / 'a.md').write_text('甲' * 1200, encoding='utf-8')
+        (src / 'b.md').write_text('乙' * 600, encoding='utf-8')
+        fake_vectors = [[float(len(t)), 1.0] for t in []]  # 占位，真正打桩见下
+        with patch.object(kb, 'embed_texts', side_effect=lambda texts: [[float(len(t)), 1.0] for t in texts]):
+            store, report = kb.build_from_files([src / 'a.md', src / 'b.md'], src / 'store')
+        self.assertEqual(report['files'], {'a.md': 3, 'b.md': 2})
+        self.assertEqual(report['total_chunks'], 5)
+        self.assertEqual(len(store), 5)
+        hits = store.search([float(kb.DEFAULT_CHUNK_CHARS), 1.0], top_k=5)
+        self.assertTrue(all(h['meta']['source'] in ('a.md', 'b.md') for h in hits))
+        shutil.rmtree(src, ignore_errors=True)
 
     def test_launcher_netstat_parsing(self):
         import run_studio
