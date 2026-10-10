@@ -173,6 +173,8 @@ def render_themed(title, text, theme, page=None, total_pages=None):
 
     d = ImageDraw.Draw(img)
     # 字号自适应：minimal 直接排在底上；soft 限制在中央卡片；duotone 用半透明面板
+    # 真机基线（evals/reports/baseline）：上限文本(700字)在字号下限30时溢出(422)。放宽到 26/1150，
+    # 700字+标题在最坏情况下约 1120px，可完整排下。
     margin = {'minimal': 96, 'soft': 150, 'duotone': 96}[theme]
     max_w = width - margin * 2
     size = 56
@@ -185,16 +187,16 @@ def render_themed(title, text, theme, page=None, total_pages=None):
         body_step = round(max(20, round(size * .52)) * 1.78)
         gap_tb = 42 if tl and bl else 0
         content_h = len(tl) * title_step + gap_tb + len(bl) * body_step
-        if content_h <= 980 or size <= 30:
+        if content_h <= 1150 or size <= 26:
             break
         size -= 3
-    if content_h > 1060:
+    if content_h > 1240:
         raise ValueError('文字过多，请拆分页面或精简内容')
 
     if theme == 'soft':
         card_w = width - 128
-        card_h = min(total - 220, content_h + 130)
-        cx0, cy0 = 64, (total - card_h) // 2
+        card_h = min(total - 120, content_h + 130)
+        cx0, cy0 = 64, max(30, (total - card_h) // 2)
         sh = Image.new('RGBA', img.size, (0, 0, 0, 0))
         ImageDraw.Draw(sh).rounded_rectangle((cx0, cy0 + 12, cx0 + card_w, cy0 + card_h + 12),
                                              radius=36, fill=(60, 80, 70, 26))

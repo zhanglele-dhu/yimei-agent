@@ -1,0 +1,181 @@
+{
+  "label": "真机基线",
+  "generated_at": "20261010-221004",
+  "summary": {
+    "total": 10,
+    "success": 0,
+    "success_degraded": 10,
+    "bad_case": 0,
+    "bad_case_rate": 0.0,
+    "degraded_rate": 100.0,
+    "tags": {
+      "degraded_vision": 10,
+      "L3:model_capability": 10,
+      "page_count_drift": 1
+    }
+  },
+  "results": [
+    {
+      "id": "q01",
+      "question": "M22和普通光子嫩肤有什么区别？",
+      "status": "success_degraded",
+      "l1": "retrieval",
+      "l2": [
+        "degraded_vision"
+      ],
+      "l3": [
+        "model_capability"
+      ],
+      "notes": [
+        "视觉轨失败，已降级文字轨完成拆解"
+      ],
+      "case": "一篇文章给你讲清楚m22"
+    },
+    {
+      "id": "q02",
+      "question": "做M22疼不疼？要不要敷麻药？",
+      "status": "success_degraded",
+      "l1": "retrieval",
+      "l2": [
+        "degraded_vision"
+      ],
+      "l3": [
+        "model_capability"
+      ],
+      "notes": [
+        "视觉轨失败，已降级文字轨完成拆解"
+      ],
+      "case": "两种M22,aopt和opt的感受！"
+    },
+    {
+      "id": "q03",
+      "question": "M22一个疗程做几次？间隔多久？",
+      "status": "success_degraded",
+      "l1": "retrieval",
+      "l2": [
+        "degraded_vision"
+      ],
+      "l3": [
+        "model_capability"
+      ],
+      "notes": [
+        "视觉轨失败，已降级文字轨完成拆解"
+      ],
+      "case": "关于M22～公立医院金牌医生👩‍⚕️为你答疑解"
+    },
+    {
+      "id": "q04",
+      "question": "做完M22之后要怎么护理？",
+      "status": "success_degraded",
+      "l1": "retrieval",
+      "l2": [
+        "degraded_vision",
+        "page_count_drift"
+      ],
+      "l3": [
+        "model_capability"
+      ],
+      "notes": [
+        "视觉轨失败，已降级文字轨完成拆解",
+        "大纲 5 页超出原帖 1 页±1，已自动压缩为 2 页"
+      ],
+      "case": "光子嫩肤术后注意事项｜按时间线整理到位"
+    },
+    {
+      "id": "q05",
+      "question": "M22能改善红血丝吗？原理是什么？",
+      "status": "success_degraded",
+      "l1": "retrieval",
+      "l2": [
+        "degraded_vision"
+      ],
+      "l3": [
+        "model_capability"
+      ],
+      "notes": [
+        "视觉轨失败，已降级文字轨完成拆解"
+      ],
+      "case": "关于M22～公立医院金牌医生👩‍⚕️为你答疑解"
+    },
+    {
+      "id": "q06",
+      "question": "第一次去做M22，面诊时应该问什么？",
+      "status": "success_degraded",
+      "l1": "retrieval",
+      "l2": [
+        "degraded_vision"
+      ],
+      "l3": [
+        "model_capability"
+      ],
+      "notes": [
+        "视觉轨失败，已降级文字轨完成拆解"
+      ],
+      "case": "平等的骂醒每一个想去光子嫩肤的..."
+    },
+    {
+      "id": "q07",
+      "question": "M22做完整脸大概什么价位？",
+      "status": "success_degraded",
+      "l1": "retrieval",
+      "l2": [
+        "degraded_vision"
+      ],
+      "l3": [
+        "model_capability"
+      ],
+      "notes": [
+        "视觉轨失败，已降级文字轨完成拆解"
+      ],
+      "case": ""
+    },
+    {
+      "id": "q08",
+      "question": "M22的VASCULAR滤光片是干什么的？",
+      "status": "success_degraded",
+      "l1": "retrieval",
+      "l2": [
+        "degraded_vision"
+      ],
+      "l3": [
+        "model_capability"
+      ],
+      "notes": [
+        "视觉轨失败，已降级文字轨完成拆解"
+      ],
+      "case": "全模式光子嫩肤怎么选择玻片"
+    },
+    {
+      "id": "q09",
+      "question": "敏感肌能不能做M22？",
+      "status": "success_degraded",
+      "l1": "retrieval",
+      "l2": [
+        "degraded_vision"
+      ],
+      "l3": [
+        "model_capability"
+      ],
+      "notes": [
+        "视觉轨失败，已降级文字轨完成拆解"
+      ],
+      "case": "光子对玫瑰皮的好处与坏处"
+    },
+    {
+      "id": "q10",
+      "question": "M22和超皮秒有什么区别？怎么选？",
+      "status": "success_degraded",
+      "l1": "retrieval",
+      "l2": [
+        "degraded_vision"
+      ],
+      "l3": [
+        "model_capability"
+      ],
+      "notes": [
+        "视觉轨失败，已降级文字轨完成拆解"
+      ],
+      "case": "一篇看懂光子嫩肤和皮秒有什么区别？"
+    }
+  ]
+}

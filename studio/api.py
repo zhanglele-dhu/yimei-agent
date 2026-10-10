@@ -28,7 +28,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20261010-2'
+VERSION='cases-20261010-3'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 STAGE_LABELS_ZH={'retrieval':'第1步检索','language':'第2步语言分析','visual':'第3步视觉分析','facts':'第4步事实资料','writing':'第5步写作规则'}
 MAX_VISION_PAGES=12  # 视觉轨单次看图上限：配合 llm.py 的 token 预算，超过则降级文字轨
@@ -471,13 +471,29 @@ def confirm_analysis(task_id:str,body:AnalysisConfirmation):
 def draft(task_id:str,body:Revision):
     task=current(task_id,body.revision)
     if not task['confirmed_analysis']:raise HTTPException(409,'请先确认原帖拆解和新内容大纲')
-    result=invoke(task,Draft,{'action':prompts.DRAFT,
-        'request':task['request'],'outline':task['confirmed_analysis']['outline']})
-    if [p.number for p in result.pages]!=list(range(1,len(task['confirmed_analysis']['outline'])+1)):
-        raise HTTPException(502,'生成页数与已确认大纲不一致，请手动重试')
+    outline=task['confirmed_analysis']['outline']
+    expected=list(range(1,len(outline)+1))
+    # 真机基线（evals/reports/baseline）：2/10 题草稿页数与大纲不一致直接 502。
+    # 修复：带错误反馈自动重试一次（有限重试，不循环），重试仍失败才报错。
+    result=None
+    retry_note=None
+    for attempt in (1, 2):
+        action=prompts.DRAFT
+        if attempt == 2:
+            action += (' ⚠ 系统提示：你上一次生成的 pages 数量与 outline 不一致被退回。'
+                       f'必须恰好 {len(outline)} 页，number 从 1 开始连续编号，一页对应大纲一行，不要多也不要少。')
+        result=invoke(task,Draft,{'action':action,
+            'request':task['request'],'outline':outline})
+        if [p.number for p in result.pages]==expected:
+            break
+        retry_note=f'第 {attempt} 次草稿页数不一致（{len(result.pages)}页/应{len(outline)}页），已自动重试'
+    if [p.number for p in result.pages]!=expected:
+        raise HTTPException(502,'生成页数与已确认大纲不一致（已自动重试一次仍未修复），请手动重试')
     valid={s['id'] for s in sources_for(task)}
     if any(not set(p.source_ids)<=valid for p in result.pages):raise HTTPException(502,'生成内容引用了不存在的来源')
     echo_notes=[]
+    if retry_note:
+        echo_notes.append(retry_note)
     for p in result.pages:
         cleaned,changed=_strip_title_echo(p.title,p.text)
         if changed:

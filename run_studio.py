@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 os.chdir(ROOT)
-CURRENT_VERSION = 'cases-20261010-2'
+CURRENT_VERSION = 'cases-20261010-3'
 token_path = ROOT / 'outputs' / 'studio' / 'access_token.txt'
 token_path.parent.mkdir(parents=True, exist_ok=True)
 if not token_path.exists():

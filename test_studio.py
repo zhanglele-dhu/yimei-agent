@@ -292,6 +292,43 @@ class StudioTests(unittest.TestCase):
         self.assertTrue(all(h['meta']['source'] in ('a.md', 'b.md') for h in hits))
         shutil.rmtree(src, ignore_errors=True)
 
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_draft_retry_on_page_count_mismatch(self,mock):
+        """真机基线 bad case 修复：草稿页数与大纲不一致时自动重试一次并成功。"""
+        t=self.create()
+        t=self.post(t,'/analysis-stage',stage='retrieval',decision='accept')
+        t=self.post(t,'/analyze')
+        t=self.post(t,'/confirm-analysis',analysis=t['analysis'])
+        calls={'draft':0}
+        def flaky_generate(schema,instruction,sources,images=None,outline_anchor=None):
+            result,trace=fake_generate(schema,instruction,sources,images)
+            if schema is Draft:
+                calls['draft']+=1
+                if calls['draft']==1:
+                    result=result.model_copy(update={'pages':result.pages[:1]})  # 第一次少给页
+            return result,trace
+        with patch('studio.llm.generate',side_effect=flaky_generate):
+            t=self.post(t,'/draft')
+        self.assertEqual(calls['draft'],2)
+        self.assertEqual(len(t['draft']['pages']),len(t['confirmed_analysis']['outline']))
+        # 重试动作写进了草稿日志
+        with api.db() as conn:
+            self.assertIn('runlog',json.loads(conn.execute('SELECT body FROM tasks WHERE id=?',(t['id'],)).fetchone()[0]))
+        log=(api.DATA/'runlogs'/json.loads(json.dumps(t.get('runlog')))).read_text(encoding='utf-8') if t.get('runlog') else ''
+        if log:
+            self.assertIn('已自动重试',log)
+
+    def test_render_themed_fits_max_text(self):
+        """真机基线 bad case 修复：上限文本(700字+标题)在新版式容量下不再溢出。"""
+        title='第一次了解M22的顾客最关心的问题与解答'
+        text=('术后当天会有轻微泛红和 Pun 热感，属于正常反应。' * 16)[:700]
+        for theme in ('minimal','soft','duotone'):
+            data,meta=rendering.render_themed(title,text,theme,page=1,total_pages=2)
+            self.assertEqual(meta['width'],1080)
+        # 仍然拒绝明显超量的文字
+        with self.assertRaises(ValueError):
+            rendering.render_themed(title,'超' * 2000,'minimal')
+
     def test_launcher_netstat_parsing(self):
         import run_studio
         sample='\r\n'.join([
