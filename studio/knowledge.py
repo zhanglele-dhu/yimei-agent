@@ -35,17 +35,41 @@ def chunk_text(text, size=DEFAULT_CHUNK_CHARS, overlap=DEFAULT_CHUNK_OVERLAP):
 
 
 def embed_texts(texts):
-    """调智谱 embedding-3（OpenAI 兼容接口）把一批文本变成向量。密钥复用 VISION_API_KEY。"""
+    """把一批文本变成向量。后端可插拔：
+    - hashing（默认，离线免费）：字符二元组哈希到 512 维并归一化——词法级检索，
+      稳定永不断供，小而准的语料（几十~几百块）效果够用；
+    - zhipu（真语义向量，需 STUDIO_EMBED_BACKEND=zhipu）：智谱 embedding-3，
+      需要 EMBED_API_KEY/VISION_API_KEY 且账户有 embedding 资源包（2026-10-10 实测余额不足会 429）。
+    两种后端都是"文本→定长向量"，余弦检索与存储格式完全一致，可随时切换重建。"""
     if not texts:
         return []
-    from openai import OpenAI
-    api_key = os.getenv('EMBED_API_KEY') or os.getenv('VISION_API_KEY')
-    if not api_key:
-        raise RuntimeError('向量化未配置（需要 EMBED_API_KEY 或 VISION_API_KEY）')
-    client = OpenAI(api_key=api_key, base_url='https://open.bigmodel.cn/api/paas/v4', timeout=120, max_retries=0)
-    model = os.getenv('STUDIO_EMBED_MODEL', 'embedding-3')
-    response = client.embeddings.create(model=model, input=list(texts))
-    return [item.embedding for item in response.data]
+    backend = os.getenv('STUDIO_EMBED_BACKEND', 'hashing').lower()
+    if backend == 'zhipu':
+        from openai import OpenAI
+        api_key = os.getenv('EMBED_API_KEY') or os.getenv('VISION_API_KEY')
+        if not api_key:
+            raise RuntimeError('zhipu 向量化需要 EMBED_API_KEY 或 VISION_API_KEY')
+        client = OpenAI(api_key=api_key, base_url='https://open.bigmodel.cn/api/paas/v4', timeout=120, max_retries=0)
+        model = os.getenv('STUDIO_EMBED_MODEL', 'embedding-3')
+        response = client.embeddings.create(model=model, input=list(texts))
+        return [item.embedding for item in response.data]
+    return _hashing_embed(texts)
+
+
+def _hashing_embed(texts, dims=512):
+    """离线词法向量：字符二元组 md5 哈希分桶计数 + L2 归一化。"""
+    import hashlib
+    vectors = []
+    for t in texts:
+        clean = (t or '').replace(' ', '')
+        v = [0.0] * dims
+        for i in range(len(clean) - 1):
+            bigram = clean[i:i + 2]
+            bucket = int(hashlib.md5(bigram.encode('utf-8')).hexdigest(), 16) % dims
+            v[bucket] += 1.0
+        norm = sum(x * x for x in v) ** 0.5 or 1.0
+        vectors.append([round(x / norm, 6) for x in v])
+    return vectors
 
 
 def cosine(a, b):

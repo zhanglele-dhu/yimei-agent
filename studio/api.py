@@ -28,7 +28,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20261010-3'
+VERSION='cases-20261010-4'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 STAGE_LABELS_ZH={'retrieval':'第1步检索','language':'第2步语言分析','visual':'第3步视觉分析','facts':'第4步事实资料','writing':'第5步写作规则'}
 MAX_VISION_PAGES=12  # 视觉轨单次看图上限：配合 llm.py 的 token 预算，超过则降级文字轨
@@ -85,6 +85,51 @@ def current(task_id,revision):
     if task['revision']!=revision:raise HTTPException(409,'任务已变化，请刷新后重试')
     return task
 
+_KB_SEARCH_CACHE = {}
+
+
+def kb_source(task):
+    """RAG：按任务问题从知识库语义检索 top-k 片段，作为第4步事实资料的 KB 来源。
+    知识库不存在或向量化失败时返回 None（不阻断主流程）。结果按问题缓存，避免重复调用 embedding。"""
+    question = (task.get('request', {}) or {}).get('question') or ''
+    store_dir = DATA / 'knowledge_base' / 'store'
+    if not question.strip() or not (store_dir / 'meta.json').exists():
+        return None
+    cached = _KB_SEARCH_CACHE.get(question)
+    if cached is None:
+        try:
+            from .knowledge import KnowledgeStore, embed_texts
+            store = KnowledgeStore.load(store_dir)
+            qvec = embed_texts([question])[0]
+            top = store.search(qvec, top_k=4)
+            items = []
+            for h in top:
+                raw = h['meta']
+                info = {}
+                if isinstance(raw, dict):
+                    inner = raw.get('source')
+                    if isinstance(inner, str):
+                        try:
+                            info = json.loads(inner)
+                        except ValueError:
+                            info = {'file': inner[:40]}
+                elif isinstance(raw, str):
+                    try:
+                        info = json.loads(raw)
+                    except ValueError:
+                        info = {'file': raw[:40]}
+                tag = f"{info.get('category', '')}｜{info.get('file', '')}"
+                items.append(f"{h['text']}（相关度{h['score']}｜{tag}｜{info.get('source_line', '')}）")
+            cached = {'id': 'KB', 'type': 'RAG 检索的公开知识库摘录（网络采集+大模型分类+向量检索，未经独立核实，非医学证据）',
+                      'content': items}
+        except Exception as exc:
+            _KB_SEARCH_CACHE[question] = None
+            print('知识库检索失败（不阻断）：', str(exc)[:120])
+            return None
+        _KB_SEARCH_CACHE[question] = cached
+    return dict(cached) if cached else None
+
+
 def sources_for(task):
     result=[{'id':'GUIDE','type':'人工确认的流程边界，非医学证据',
              'content':json.loads((ROOT/'knowledge/shooting_guide.json').read_text(encoding='utf-8-sig'))},
@@ -94,6 +139,9 @@ def sources_for(task):
                        'content':(ROOT/'knowledge/procedures.md').read_text(encoding='utf-8-sig')})
     if task.get('case'):
         result.append({'id':'CASE','type':'参考笔记，仅借鉴结构，不作为医学事实证据','content':task['case']})
+    kb=kb_source(task)
+    if kb:
+        result.append(kb)
     return result
 
 def invoke(task,schema,instruction,images=None,outline_anchor=None):

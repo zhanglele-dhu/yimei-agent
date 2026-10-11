@@ -244,6 +244,17 @@ class StudioTests(unittest.TestCase):
         status, l1, l2, l3, _ = evals.classify({'case': None}, {'retrieval': False})
         self.assertEqual(status, 'bad_case');self.assertIn('data_quality', l3)
 
+    def test_knowledge_hashing_embed(self):
+        """离线词法向量：同文=1，共享二元组得分更高，零向量=0；默认后端不调任何 API。"""
+        from studio import knowledge as kb
+        v1, = kb._hashing_embed(['光子嫩肤术后防晒SPF30'])
+        v2, = kb._hashing_embed(['光子嫩肤术后防晒SPF30'])
+        v3, = kb._hashing_embed(['光子嫩肤术后防晒'])
+        self.assertAlmostEqual(kb.cosine(v1, v2), 1.0)
+        self.assertGreater(kb.cosine(v1, v3), 0.5)   # 共享前缀二元组，明显相关
+        z, = kb._hashing_embed([''])
+        self.assertEqual(kb.cosine(z, v1), 0.0)
+
     def test_knowledge_chunk_and_store(self):
         """知识库 v1：切片带重叠、存储读写往返、余弦检索排序正确。"""
         from studio import knowledge as kb
@@ -328,6 +339,48 @@ class StudioTests(unittest.TestCase):
         # 仍然拒绝明显超量的文字
         with self.assertRaises(ValueError):
             rendering.render_themed(title,'超' * 2000,'minimal')
+
+    def test_kb_source_rag_in_facts(self):
+        """第4步事实资料的 RAG：知识库存在时 sources_for 注入 KB 检索片段。"""
+        from studio import knowledge as kb
+        store_dir = Path(api.DATA) / 'knowledge_base' / 'store'
+        store = kb.KnowledgeStore()
+        store.add([{'text': 'KB片段：光子嫩肤术后需SPF30防晒', 'pos': 0},
+                   {'text': 'KB片段：515nm改善浅表色斑', 'pos': 0}],
+                  [[1.0, 0.0], [0.0, 1.0]],
+                  source=json.dumps({'file': 't.md', 'category': '测试', 'source_line': '来源: 测试'}, ensure_ascii=False))
+        store.save(store_dir)
+        self.addCleanup(shutil.rmtree, store_dir.parent, ignore_errors=True)
+        self.addCleanup(api._KB_SEARCH_CACHE.clear)
+        task = {'request': {'question': 'kb-test-唯一问题-防晒', 'project': 'M22', 'facts': ''}, 'case': {'id': 'x'}}
+        with patch('studio.knowledge.embed_texts', side_effect=lambda texts: [[1.0, 0.0] for _ in texts]):
+            sources = api.sources_for(task)
+        kb_sources = [s for s in sources if s['id'] == 'KB']
+        self.assertEqual(len(kb_sources), 1)
+        self.assertIn('SPF30', kb_sources[0]['content'][0])
+        self.assertIn('未经独立核实', kb_sources[0]['type'])
+
+    def test_build_kb_pipeline_mocked(self):
+        """建库流水线：分类+切片+落库（embedding 打桩），meta 携带类别与来源。"""
+        from studio import build_kb
+        corpus = Path(api.DATA) / 'kb-build-src'
+        corpus.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(shutil.rmtree, corpus, ignore_errors=True)
+        (corpus / 'x.md').write_text('来源: 测试来源\n\n# 标题\n\n正文' + '内容' * 300, encoding='utf-8')
+
+        def fake_class(schema, instruction, sources, images=None, outline_anchor=None):
+            return build_kb.DocClass(category='测试类', summary='摘要', keywords=['k1']), {'elapsed_ms': 1}
+
+        with patch('studio.llm.generate', side_effect=fake_class), \
+             patch('studio.build_kb.embed_texts', side_effect=lambda texts: [[float(len(t)), 0.0] for t in texts]):
+            store, classes = build_kb.build(str(corpus), str(corpus / 'store'))
+        self.assertEqual(classes['x.md']['category'], '测试类')
+        self.assertGreater(len(store), 0)
+        entry_meta = store.meta[0]['meta']
+        info = json.loads(entry_meta['source']) if isinstance(entry_meta['source'], str) else entry_meta['source']
+        self.assertEqual(info['category'], '测试类')
+        self.assertIn('来源: 测试来源', info['source_line'])
+        self.assertTrue((corpus / 'store' / 'meta.json').exists())
 
     def test_launcher_netstat_parsing(self):
         import run_studio

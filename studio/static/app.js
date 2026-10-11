@@ -540,9 +540,16 @@ function renderFactsStage(parent) {
   const trace = [...(task.traces || [])].reverse().find(item => item.sources);
   (trace?.sources || []).forEach(source => {
     const details = el('details');
-    details.append(el('summary', source.id + ' · ' + (source.type || '未标注类型')));
-    const content = typeof source.content === 'string' ? source.content : JSON.stringify(source.content, null, 2);
-    details.append(el('pre', content.slice(0, 3000), 'scroll-pre'));
+    const kbHint = source.id === 'KB' ? '（按本任务问题语义检索，展开逐条核对）' : '';
+    details.append(el('summary', source.id + ' · ' + (source.type || '未标注类型') + kbHint));
+    if (Array.isArray(source.content)) {
+      const list = el('ul', undefined, 'kb-hits');
+      source.content.forEach(item => list.append(el('li', item)));
+      details.append(list);
+    } else {
+      const content = typeof source.content === 'string' ? source.content : JSON.stringify(source.content, null, 2);
+      details.append(el('pre', content.slice(0, 3000), 'scroll-pre'));
+    }
     parent.append(details);
   });
   if (task.analysis.missing_information.length) parent.append(el('p', 'AI 标出的缺少信息：' + task.analysis.missing_information.join('；'), 'review'));
