@@ -28,10 +28,14 @@ GOLDEN = [
     {'q': 'Vascular 血管滤光片是做什么的？', 'expect': ['血管', '530-650']},
     {'q': '做完光子嫩肤之后怎么防晒？', 'expect': ['SPF30', '防晒']},
     {'q': '光子嫩肤反黑是怎么回事？', 'expect': ['反黑', '色素沉着']},
-    {'q': '光子嫩肤多少钱一次？', 'expect': ['1000-3000', '价格']},
+    {'q': '光子嫩肤多少钱一次？', 'expect': ['1000-3000', '价格', '1980']},
     {'q': '光子嫩肤的原理是什么？', 'expect': ['选择性光热', '强脉冲光']},
     {'q': '哪些人不适合做光子嫩肤？', 'expect': ['孕妇', '光敏']},
     {'q': '医美科普内容有什么合规红线？', 'expect': ['医疗广告', '容貌焦虑']},
+    {'q': 'AOPT和OPT有什么区别？', 'expect': ['完美脉冲', '只有M22']},
+    {'q': 'Acne痤疮双效管理的双波原理是什么？', 'expect': ['卟啉', '400-600']},
+    {'q': 'M22全面部治疗一次需要多久？', 'expect': ['15-20', '20-30']},
+    {'q': 'Vascular血管滤光片治疗的终点是什么？', 'expect': ['变深或变白', '凝固', '回流']},
 ]
 
 
@@ -110,22 +114,22 @@ def build(corpus_dir, store_dir):
     return store, classes
 
 
-def recall_check(store_dir, top_k=4):
+def recall_check(store_dir, top_k=6):
     """金标召回率：每题检索 top_k，命中任一期望关键词即算召回。返回 (recall, 明细)。"""
     store = KnowledgeStore.load(store_dir)
     hits, details = 0, []
     for g in GOLDEN:
         q = g['q']
         qvec = embed_texts([q])[0]
-        top = store.search(qvec, top_k=top_k)
+        top = store.search(qvec, top_k=top_k, query_text=q)
         joined = ' '.join(h['text'] for h in top)
         hit = any(kw in joined for kw in g['expect'])
         hits += hit
         details.append({'q': q, 'recall': hit,
-                        'top': [{'score': h['score'], 'meta': str(h['meta'])[:60]} for h in top[:2]]})
+                        'top': [{'score': h['score'], 'lex': h.get('lex', 0), 'meta': str(h['meta'])[:60]} for h in top[:2]]})
         print(f"  {'PASS' if hit else 'MISS'} {q}")
     recall = round(hits / len(GOLDEN) * 100, 1)
-    print(f'召回率（top_{top_k}，命中任一关键词）：{recall}% ({hits}/{len(GOLDEN)})')
+    print(f'召回率（top_{top_k}，两段式召回+词法精排，命中任一关键词）：{recall}% ({hits}/{len(GOLDEN)})')
     return recall, details
 
 

@@ -28,7 +28,7 @@ DATA=Path(os.getenv('STUDIO_DATA_DIR',str(ROOT/'outputs/studio'))).resolve()
 DATA.mkdir(parents=True,exist_ok=True)
 BUNDLES=DATA/'bundles'
 TOKEN=os.getenv('STUDIO_ACCESS_TOKEN','')
-VERSION='cases-20261010-4'
+VERSION='cases-20261010-5'
 ANALYSIS_STAGES=('retrieval','language','visual','facts','writing')
 STAGE_LABELS_ZH={'retrieval':'第1步检索','language':'第2步语言分析','visual':'第3步视觉分析','facts':'第4步事实资料','writing':'第5步写作规则'}
 MAX_VISION_PAGES=12  # 视觉轨单次看图上限：配合 llm.py 的 token 预算，超过则降级文字轨
@@ -101,7 +101,7 @@ def kb_source(task):
             from .knowledge import KnowledgeStore, embed_texts
             store = KnowledgeStore.load(store_dir)
             qvec = embed_texts([question])[0]
-            top = store.search(qvec, top_k=4)
+            top = store.search(qvec, top_k=6, query_text=question)
             items = []
             for h in top:
                 raw = h['meta']

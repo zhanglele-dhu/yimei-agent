@@ -110,15 +110,45 @@ class KnowledgeStore:
         store.vectors = json.loads((path / 'vectors.json').read_text(encoding='utf-8'))
         return store
 
-    def search(self, query_vector, top_k=4):
-        """按余弦相似度返回最相关的 top_k 块：[{'text', 'meta', 'score'}]，分数从高到低。"""
+    def search(self, query_vector, top_k=4, query_text=None, rerank=True):
+        """语义检索 top_k。两段式召回策略（query_text 给出时启用）：
+        第一段：向量余弦召回，候选池放宽到 max(top_k*3, 12)（解决语料扩量后相关块被稀释的问题）；
+        第二段：IDF 加权词法精排（迷你 BM25 思想）——查询词中越稀有、越有区分度的字组
+        （如"反黑/终点/孕妇"）权重越高，常见词（"光子/嫩肤"）几乎不加分；
+        按精排分排序，向量分做同分决胜。
+        返回 [{'text', 'meta', 'score', 'lex'}]，lex 为 IDF 加权词法覆盖率（0-1）。"""
+        import math
         scored = [{'text': m['text'], 'meta': m['meta'], 'score': round(cosine(query_vector, v), 4)}
                   for m, v in zip(self.meta, self.vectors)]
         scored.sort(key=lambda item: -item['score'])
+        if query_text and rerank:
+            qgrams = _char_bigrams(query_text)
+            df = {}
+            for m in self.meta:
+                for gram in _char_bigrams(m['text']):
+                    df[gram] = df.get(gram, 0) + 1
+            n_docs = max(1, len(self.meta))
+            pool = scored[:max(top_k * 3, 12)]
+            for item in pool:
+                grams = _char_bigrams(item['text'])
+                weight_sum = hit_sum = 0.0
+                for gram in qgrams:
+                    idf = math.log(1 + n_docs / (1 + df.get(gram, 0)))
+                    weight_sum += idf
+                    if gram in grams:
+                        hit_sum += idf
+                item['lex'] = round(hit_sum / weight_sum, 4) if weight_sum else 0.0
+            pool.sort(key=lambda item: (-item['lex'], -item['score']))
+            return pool[:top_k]
         return scored[:top_k]
 
     def __len__(self):
         return len(self.meta)
+
+
+def _char_bigrams(text):
+    clean = (text or '').replace(' ', '')
+    return {clean[i:i + 2] for i in range(len(clean) - 1)}
 
 
 def build_from_files(file_paths, store_dir, source_names=None):
