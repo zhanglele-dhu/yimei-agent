@@ -1,0 +1,30 @@
+# ── 密钥与本机配置：绝不提交 ──
+.env
+.env.*
+.venv*/
+__pycache__/
+*.pyc
+*.sqlite3
+
+# ── 用户数据与运行证据（含访问口令、任务库、用户照片）：绝不提交 ──
+outputs/
+
+# ── 内部交接文档（含项目内部分析，仅本地保留）：不提交 ──
+handoff.md
+我的槽点.md
+
+# ── 临时文件 ──
+*.tmp
+*.log
+.DS_Store
+Thumbs.db
+
+# ── 爬取的第三方数据一律不入库（图片包/浏览器档案等） ──
+collector_profile/
+
+.env.card-model
+.env.card-model.tmp
+
+# 本地采集、案例和用户数据
+/data/
+collector/data/

@@ -1,0 +1,10 @@
+*
+!Dockerfile
+!requirements-studio.lock.txt
+!studio/
+!studio/**
+!knowledge/
+!knowledge/procedures.md
+!knowledge/shooting_guide.json
+**/__pycache__/
+**/*.pyc

@@ -1,0 +1,87 @@
+[
+  {
+    "id": "M22-CN-AOPT", "title": "M22 AOPT超光子｜科医人中国官网", "kind": "official",
+    "url": "https://www.lumenis.com.cn/cg.html", "scope": "中国版M22 AOPT产品介绍", "categories": ["设备与版本", "滤片与脉冲"],
+    "facts": ["科医人中国页面介绍M22 AOPT为强脉冲光与激光多功能平台，AOPT可独立调整各子脉冲参数。", "该中国版页面列出8张滤片，含血管与痤疮两种双波滤片；可选配1565nm ResurFX非剥脱点阵模块。"],
+    "limitations": ["这里记录中国版官网规格；门店实际购买的模块和滤片应按设备配置核对。"], "keywords": ["M22", "AOPT", "中国版", "8张滤片", "版本区别"],
+    "access_level": "产品网页正文", "evidence_use": "设备定义与该版本规格", "locator": "产品介绍、产品优势、适应证；web检索正文可读"
+  },
+  {
+    "id": "M22-GLOBAL-PLATFORM", "title": "M22 Modular Aesthetic Laser Multi-Application Platform", "kind": "official",
+    "url": "https://lumenis.com/aesthetics/products/m22/", "scope": "国际版M22模块平台", "categories": ["设备与版本", "原理与光谱"],
+    "facts": ["M22是设备平台名称；厂商将Universal IPL、ResurFX、Multi-Spot Nd:YAG、Q-Switched Nd:YAG分列为四类模块。", "IPL是强脉冲光技术，OPT与AOPT是脉冲控制技术，不能把平台名、光源类别与脉冲技术写成同一级设备分类。", "该国际页面单列中国AOPT版本，说明不同地区、版本的配置介绍需要分别查看。"],
+    "limitations": ["可扩展平台不等于每台门店设备都安装全部模块。"], "keywords": ["M22是什么", "平台", "IPL", "OPT", "AOPT", "模块"], "access_level": "产品网页正文", "evidence_use": "平台与模块定义", "locator": "4 Multiple Technologies；中国AOPT版本段落"
+  },
+  {
+    "id": "M22-GLOBAL-IPL", "title": "M22 Universal IPL with Optimal Pulse Technology", "kind": "official",
+    "url": "https://lumenis.com/aesthetics/products/m22/universal-ipl/", "scope": "国际Universal IPL手具介绍", "categories": ["设备与版本", "滤片与脉冲", "原理与光谱"],
+    "facts": ["国际Universal IPL页面列出9种ExpertFilters和3种蓝宝石接触冷却导光头，强调同一手具通过更换滤片适配不同需求。", "OPT控制整个脉冲或连续子脉冲的能量分布；Advanced OPT允许分别设定各子脉冲的能量。"],
+    "limitations": ["9种滤片属于该国际产品页，不应直接改写为中国AOPT设备标配9张。"], "keywords": ["滤片", "9张", "OPT", "AOPT", "脉冲", "接触冷却"], "access_level": "产品网页正文", "evidence_use": "对应版本光学与脉冲结构", "locator": "Universal IPL；OPT advantages"
+  },
+  {
+    "id": "M22-RESURFX", "title": "M22 ResurFX Fractional Laser", "kind": "official",
+    "url": "https://lumenis.com/aesthetics/products/m22/resurfx/", "scope": "ResurFX独立模块", "categories": ["设备与版本", "光老化与肤质", "原理与光谱"],
+    "facts": ["ResurFX使用1565nm光纤激光与点阵扫描，是M22可搭载的非剥脱点阵模块，不属于IPL滤片。", "厂商介绍CoolScan以非连续方式分配微光斑，并配有持续接触冷却。"],
+    "limitations": ["ResurFX的扫描机制与研究结果应和IPL分别说明。"], "keywords": ["ResurFX", "1565nm", "非剥脱", "点阵", "IPL区别"], "access_level": "产品网页正文", "evidence_use": "独立模块技术结构", "locator": "ResurFX and CoolScan"
+  },
+  {
+    "id": "M22-FDA-K193500", "title": "FDA 510(k) K193500: Stellar M22 IPL and Laser System", "kind": "regulatory",
+    "url": "https://www.accessdata.fda.gov/cdrh_docs/pdf19/K193500.pdf", "scope": "美国2020年Stellar M22审评文件", "categories": ["研究与注册", "设备与版本", "滤片与脉冲"],
+    "published_date": "2020-01-16", "facts": ["该文件将Stellar M22列为II类器械，以实质等同路径获得510(k)许可；这与PMA审批路径不同。", "文件分别列出400–1200nm、9种滤片的IPL手具，以及1064nm Nd:YAG和1565nm ResurFX模块的用途。", "第7至8页列出515、560、590、615、640、695、755nm七种截止滤片，及Acne和Vascular两种双波滤片；这里的nm数值是滤光规格，不是治疗剂量。"],
+    "limitations": ["该文件描述美国对应版本与用途，不代表中国注册范围或某家门店配置。"], "keywords": ["FDA", "注册", "Stellar", "光谱", "400-1200", "滤片", "515", "755"], "access_level": "PDF第1、3至8页", "evidence_use": "美国器械审评与对应型号技术信息", "locator": "Indications for Use；510(k) SUMMARY；Device Description"
+  },
+  {
+    "id": "M22-FDA-DRYEYE", "title": "FDA De Novo DEN200028: Lumenis Stellar M22", "kind": "regulatory",
+    "url": "https://www.accessdata.fda.gov/scripts/cdrh/cfdocs/cfpmn/denovo.cfm?id=DEN200028", "scope": "眼科独立应用", "categories": ["眼科独立应用", "研究与注册"],
+    "published_date": "2021-02-23", "facts": ["DEN200028记录的是用于管理干眼的强脉冲光设备分类，产品名为Lumenis Stellar M22，审评专业为眼科。"],
+    "limitations": ["眼科器械分类不支持宣称M22皮肤美容效果更好。"], "keywords": ["干眼", "眼科", "De Novo", "DEN200028"], "access_level": "FDA数据库记录", "evidence_use": "眼科用途分类记录", "locator": "Device classification / decision date"
+  },
+  {
+    "id": "M22-CONSENSUS-2024", "title": "窄谱强脉冲光临床应用专家共识（2024版）", "kind": "consensus",
+    "url": "https://zhsszz.xml-journal.net/cn/article/doi/10.3760/cma.j.cn501225-20230918-00085", "doi": "10.3760/cma.j.cn501225-20230918-00085", "scope": "窄谱IPL共识，包含M22滤片讨论", "categories": ["滤片与脉冲", "痤疮与痘印", "泛红与血管"],
+    "published_date": "2024-01-01", "facts": ["共识区分M22痤疮双波滤片400–600nm与800–1200nm，以及血管双波滤片530–650nm与900–1200nm。", "两类双波滤片保留的是两个波段，不应表述成单一激光波长；共识按不同临床问题分别讨论应用。"],
+    "limitations": ["采用了文章书目、摘要与PDF第21页滤片段落；不把全部窄谱IPL结论视为M22专属结论。"], "keywords": ["共识", "双波", "Acne", "Vascular", "400-600", "530-650", "滤光片"], "access_level": "摘要与PDF第21页所见段落", "evidence_use": "对应滤片机制和临床问题的专家共识", "locator": "中华烧伤与创面修复杂志2024;40(1):19-25，滤片段落"
+  },
+  {
+    "id": "M22-STATPEARLS", "title": "Intense Pulsed Light (IPL) Therapy — StatPearls", "kind": "education",
+    "url": "https://www.ncbi.nlm.nih.gov/sites/books/NBK580525/", "scope": "IPL通用知识", "categories": ["原理与光谱", "风险与适用人群"], "published_date": "2024-03-01",
+    "facts": ["IPL采用宽谱、非相干的脉冲光，与通常单波长的激光不同；滤片改变到达皮肤的光谱范围。", "黑色素和血红蛋白等色基吸收光后产生热效应，选择性光热作用是IPL的基础机制。", "已报道的风险包括红斑、疼痛、水疱和色素变化；肤色、近期日晒和参数选择会影响风险。"],
+    "limitations": ["这里是IPL通用机制与风险，不是某款M22的专属优势。"], "keywords": ["IPL", "原理", "选择性光热", "黑色素", "血红蛋白", "激光区别", "风险"], "access_level": "教材机制与并发症章节", "evidence_use": "IPL基础科普", "locator": "Anatomy and Physiology；Complications"
+  },
+  {
+    "id": "M22-ARPANSA", "title": "Advice for providers: Lasers, IPL devices and LED phototherapy", "kind": "regulatory",
+    "url": "https://www.arpansa.gov.au/understanding-radiation/sources-radiation/more-radiation-sources/lasers-and-intense-pulsed-light-1", "scope": "澳大利亚光辐射安全建议", "categories": ["风险与适用人群", "原理与光谱"],
+    "facts": ["光敏相关疾病、药物、近期晒伤或晒黑以及治疗区皮损，是光电治疗前应评估的具体因素。", "IPL可能损伤眼部组织，眼部防护是安全操作的组成部分；皮肤美容与眼科治疗需要区分场景。"],
+    "limitations": ["此处采用光辐射风险内容，不移植澳大利亚的执业法规为中国规则。"], "keywords": ["风险", "防护", "晒伤", "光敏", "眼部保护", "肤色"], "access_level": "安全评估章节", "evidence_use": "光辐射风险与评估要素", "locator": "Contraindications；client assessment；IPL definition"
+  },
+  {
+    "id": "M22-AAD-PHOTODAMAGE", "title": "How dermatologists treat sun-damaged skin — AAD", "kind": "education",
+    "url": "https://www.aad.org/public/everyday-care/sun-protection/sun-damage-skin/wrinkles-sun-damage-can-be-treated", "scope": "光老化与日常防晒", "categories": ["护理与恢复", "光老化与肤质"],
+    "facts": ["美国皮肤科学会将IPL列为改善部分肤色斑驳或泛红表现的可选治疗之一。", "治疗之外仍需持续防晒；紫外线暴露会继续造成光损伤，也可能影响治疗后的恢复和结果。"],
+    "limitations": ["该患者教育页没有给出适用于所有M22项目的固定恢复天数。"], "keywords": ["防晒", "光老化", "护理", "紫外线", "IPL"], "access_level": "患者教育网页正文", "evidence_use": "日常防晒与光老化教育", "locator": "Blotchy or ruddy complexion；Sun protection"
+  },
+  {
+    "id": "M22-DXY-FAQ", "title": "光子嫩肤快问快答｜一篇关于M22的科普（四川泰康医院）", "kind": "education",
+    "url": "https://y.dxy.cn/hospital/12943/1077194.html", "scope": "医院患教与常见问题", "categories": ["专业讨论与常见问题", "护理与恢复"], "published_date": "2026-07-22",
+    "facts": ["该院患教围绕原理、设备区别、滤片模式、痛感、术后防晒保湿等12个读者问题组织内容，可用于选题和问答结构参考。", "护理段强调减少紫外线暴露、温和保湿，避免治疗后立即化妆刺激。"],
+    "limitations": ["院方文章中的固定疗程频次与绝对化表述不直接复制为所有人的通用结论。"], "keywords": ["护理", "防晒", "保湿", "常见问题", "化妆"], "access_level": "医院患教网页正文", "evidence_use": "患教选题、基础护理说明", "locator": "12个快问快答，尤其第12问"
+  },
+  {
+    "id": "M22-REALSELF-QA1", "title": "Is Lumenis M22 a good option for IPL? — RealSelf Q&A", "kind": "discussion",
+    "url": "https://www.realself.com/question/missoula-mt-laser-ipl-lumenis-m22-good-option", "scope": "公开医生问答", "categories": ["专业讨论与常见问题"], "published_date": "2019-07-11",
+    "facts": ["提问者关注玫瑰痤疮泛红、IPL灼伤风险以及M22是否适合；回答涉及设备选择与操作者经验。", "可将讨论转化为选题：设备名称之外，还应理解目标问题、评估流程和操作者经验。"],
+    "limitations": ["医生问答是观点与经验，不能作为M22优于其他设备的比较试验证据。"], "keywords": ["论坛", "讨论", "医生问答", "M22", "设备选择"], "access_level": "公开提问与3条医生回答", "evidence_use": "问题发现与表达角度", "locator": "2019年7月问答"
+  },
+  {
+    "id": "M22-REALSELF-QA2", "title": "Which machine gives best IPL results? — RealSelf Q&A", "kind": "discussion",
+    "url": "https://www.realself.com/question/chicago-il-ipl-machine-results", "scope": "公开医生问答", "categories": ["专业讨论与常见问题"], "published_date": "2020-10-13",
+    "facts": ["提问比较Harmony、Lumenis和BBL等设备；不同回答推荐不同设备，也强调操作者经验。", "适合整理成读者常见疑问“是不是机器越新就一定更好”，不把问答中的偏好写成疗效排名。"],
+    "limitations": ["公开商业平台问答存在实践和机构偏好，不是同条件比较研究。"], "keywords": ["论坛", "讨论", "BBL", "设备比较", "常见问题"], "access_level": "公开提问与医生回答", "evidence_use": "收集比较问题与不同观点", "locator": "2020年10月问答"
+  },
+  {
+    "id": "M22-NCT02032771", "title": "Impact of M22 Synergistic Sequential Treatment (SST)", "kind": "trial_registry",
+    "url": "https://clinicaltrials.gov/study/NCT02032771", "scope": "M22 IPL与ResurFX联合研究注册", "categories": ["研究与注册", "光老化与肤质"], "published_date": "2016-09-16",
+    "facts": ["该注册研究计划观察M22 IPL后序贯ResurFX对面部光老化相关表现的影响，登记为开放、单组研究。", "注册页面把IPL与ResurFX列为联合干预，应与单独IPL的研究区分。"],
+    "limitations": ["注册中的研究假设和终点不是已经实现的疗效，结果应另查对应发表论文。"], "keywords": ["临床试验", "注册", "IPL", "ResurFX", "联合治疗"], "access_level": "试验注册研究设计", "evidence_use": "研究设计和干预识别", "locator": "Study plan；NCT02032771"
+  }
+]
