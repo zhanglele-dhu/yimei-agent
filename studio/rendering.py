@@ -2,7 +2,7 @@
 
 三类成品：
   实拍页：程序排版标题正文 + 照片像素直通（不重采样）；
-  文字卡：三套程序版式（简约留白/柔和卡片/双色几何），AI 底图与纯色为可选；
+  文字卡：三套小红书信息卡版式（清爽杂志/奶油卡片/撞色重点），AI 底图与纯色为可选；
   对话卡：微信聊天样式（顶栏+左右气泡+头像），完全程序绘制，文字准确性由代码保证。
 """
 import io
@@ -10,12 +10,15 @@ import os
 import re
 import zipfile
 import json
+from functools import lru_cache
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 
-def font(size):
-    paths = [os.getenv('STUDIO_FONT', ''), 'C:/Windows/Fonts/msyh.ttc',
+@lru_cache(maxsize=128)
+def font(size, bold=False):
+    paths = [os.getenv('STUDIO_FONT_BOLD' if bold else 'STUDIO_FONT', ''),
+             'C:/Windows/Fonts/msyhbd.ttc' if bold else 'C:/Windows/Fonts/msyh.ttc',
              '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc']
     for path in paths:
         if path and Path(path).is_file():
@@ -36,90 +39,16 @@ def wrap(text, draw, ft, width):
 
 
 def render(title, text, photo=None, background=None, page=None, total_pages=None, theme=None):
-    original = None
-    if photo:
-        with Image.open(io.BytesIO(photo)) as im:
-            im.load()
-            original = im.convert('RGB')
-        width=original.width
-        if width<240:
-            raise ValueError('实拍照片宽度至少240像素，避免标题无法阅读')
-    else:
-        width=1080
-    if original is None and theme in ('minimal','soft','duotone'):
-        return render_themed(title,text,theme,page,total_pages)
-    pad=max(20,round(width*.065))
-    scratch=Image.new('RGB',(width,10));draw=ImageDraw.Draw(scratch)
-    size=max(16,round(width/19))
-    while True:
-        title_font=font(size);body_font=font(max(14,round(size*.6)))
-        tl=wrap(title,draw,title_font,width-2*pad-max(12,width//50)) if title else []
-        bl=wrap(text,draw,body_font,width-2*pad) if text else []
-        title_step=round(size*1.45); body_step=round(max(14,round(size*.6))*1.75)
-        height=pad*2+len(tl)*title_step+(pad if tl and bl else 0)+len(bl)*body_step
-        if original or height<=1380:break
-        size-=2
-        if size<24:raise ValueError('文字过多，请拆分页面或精简内容')
-    if original:
-        # If no text was requested, keep the decoded photo pixel-for-pixel.
-        header_height=height if title or text else 0
-        total=header_height+original.height
-        out_method='local_layout_photo_passthrough'
-    else:
-        header_height=0;total=1440
-        out_method='ai_background_composited' if background is not None else 'plain_fallback_layout'
-    if width*total>24_000_000:raise ValueError('输出像素过大，请减少文字或使用较小照片')
-    if background is not None and original is None:
-        # AI 生成底图：cover-fit 铺满画布（装饰层，允许缩放；实拍照片不走此分支）
-        with Image.open(io.BytesIO(background)) as bg:
-            bg=bg.convert('RGB')
-        scale=max(width/bg.width,total/bg.height)
-        bg=bg.resize((max(width,round(bg.width*scale)),max(total,round(bg.height*scale))),Image.LANCZOS)
-        left=(bg.width-width)//2;top=(bg.height-total)//2
-        out=bg.crop((left,top,left+width,top+total))
-    else:
-        out=Image.new('RGB',(width,total),'#f5f3eb')
-    use_bg = background is not None and original is None
-    if (title or text):
-        if use_bg:
-            # 内容块垂直居中（略偏上），避免文字挤在顶部、下方大片空白
-            content_top=max(pad,(total-height)//2-round(total*0.04))
-            overlay=Image.new('RGBA',out.size,(0,0,0,0))
-            ImageDraw.Draw(overlay).rounded_rectangle(
-                (round(pad*.5),max(8,content_top-round(pad*.6)),
-                 width-round(pad*.5),min(total-8,content_top+height+round(pad*.4))),
-                radius=round(width*.045),fill=(255,255,255,225))
-            out=Image.alpha_composite(out.convert('RGBA'),overlay).convert('RGB')
-        else:
-            content_top=pad
-        d=ImageDraw.Draw(out)
-        # 标题左侧强调竖条
-        d.rectangle((pad,content_top+round(pad*.1),pad+max(5,width//140),
-                     content_top+round(pad*.1)+len(tl)*title_step),fill='#21634f')
-        y=content_top
-        for line in tl:
-            d.text((pad+max(12,width//50),y),line,font=title_font,fill='#163d32');y+=title_step
-        if tl and bl:y+=round(pad*.9)
-        for line in bl:
-            d.text((pad,y),line,font=body_font,fill='#273b35');y+=body_step
-        # 页码角标（右下角），仅多页时显示
-        if page and total_pages and total_pages>1:
-            chip_font=font(max(14,round(size*.5)))
-            chip=f'{page} / {total_pages}'
-            cw=round(draw.textlength(chip,font=chip_font))+round(pad*.8)
-            ch=round(size*.9)
-            cx,cy=width-pad-cw,total-pad-ch
-            d.rounded_rectangle((cx,cy,cx+cw,cy+ch),radius=ch//2,fill='#21634f')
-            d.text((cx+round(pad*.4),cy+round(ch*.12)),chip,font=chip_font,fill='#ffffff')
-    if original:out.paste(original,(0,header_height))
-    b=io.BytesIO();out.save(b,format='PNG')
-    return b.getvalue(), {'width':width,'height':total,'photo_offset_y':header_height,
-                         'method':out_method}
+    from .card_layout import render_card
+    method = ('local_layout_photo_passthrough' if photo else
+              'ai_background_composited' if background is not None else
+              f'program_{theme}' if theme in ('minimal', 'soft', 'duotone') else 'plain_fallback_layout')
+    return render_card(title, text, font, wrap, theme=theme or 'minimal', photo=photo,
+                       background=background, page=page, total_pages=total_pages, method=method)
 
 
-# ---------------------------------------------------------------- 程序版式文字卡
-
-SOFT_TINTS = ['#EAF2EC', '#FBF1E6', '#ECEFF7', '#F8ECEF']
+def render_themed(title, text, theme, page=None, total_pages=None):
+    return render(title, text, theme=theme, page=page, total_pages=total_pages)
 
 
 def _page_chip(d, width, total, page, total_pages, base_size=34):
@@ -134,110 +63,6 @@ def _page_chip(d, width, total, page, total_pages, base_size=34):
     d.rounded_rectangle((cx, cy, cx + cw, cy + ch), radius=ch // 2, fill='#21634f')
     d.text((cx + 10, cy + round(ch * .12)), chip, font=chip_font, fill='#ffffff')
 
-
-def render_themed(title, text, theme, page=None, total_pages=None):
-    """三套程序绘制的文字卡版式：minimal=简约留白，soft=柔和卡片，duotone=双色几何。"""
-    width, total = 1080, 1440
-    bg = {'minimal': '#F7F5F0', 'soft': SOFT_TINTS[(max(1, page or 1) - 1) % len(SOFT_TINTS)],
-          'duotone': '#F5F0E5'}[theme]
-    img = Image.new('RGB', (width, total), bg)
-
-    if theme == 'minimal':
-        overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
-        od = ImageDraw.Draw(overlay)
-        od.rectangle((0, 0, width, 12), fill='#2E7A58')                     # 顶部绿条
-        for r in range(6):                                                   # 右下点阵
-            for c in range(6):
-                cx, cy = width - 190 + c * 26, total - 190 + r * 26
-                od.ellipse((cx - 3, cy - 3, cx + 3, cy + 3), fill=(46, 122, 88, 70))
-        img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
-
-    elif theme == 'soft':
-        overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
-        od = ImageDraw.Draw(overlay)
-        od.ellipse((width - 420, -110, width + 160, 470), fill=(255, 255, 255, 95))
-        od.ellipse((width - 250, 60, width + 90, 400), fill=(46, 122, 88, 45))
-        od.ellipse((-90, total - 240, 170, total + 20), fill=(224, 176, 101, 55))
-        img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
-
-    else:  # duotone
-        od = ImageDraw.Draw(img)
-        od.ellipse((-120, total - 460, 520, total + 180), fill='#E0B065')
-        od.ellipse((-260, total - 620, 360, total), fill='#2E7A58')
-        overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
-        od2 = ImageDraw.Draw(overlay)
-        for i in range(4):                                                   # 右上斜线组
-            x = width - 330 + i * 52
-            od2.line((x, 0, x + 170, 150), fill=(46, 122, 88, 60), width=8)
-        img = Image.alpha_composite(img.convert('RGBA'), overlay).convert('RGB')
-
-    d = ImageDraw.Draw(img)
-    # 字号自适应：minimal 直接排在底上；soft 限制在中央卡片；duotone 用半透明面板
-    # 真机基线（evals/reports/baseline）：上限文本(700字)在字号下限30时溢出(422)。放宽到 26/1150，
-    # 700字+标题在最坏情况下约 1120px，可完整排下。
-    margin = {'minimal': 96, 'soft': 150, 'duotone': 96}[theme]
-    max_w = width - margin * 2
-    size = 56
-    while True:
-        title_font = font(size)
-        body_font = font(max(20, round(size * .52)))
-        tl = wrap(title, d, title_font, max_w) if title else []
-        bl = wrap(text, d, body_font, max_w) if text else []
-        title_step = round(size * 1.42)
-        body_step = round(max(20, round(size * .52)) * 1.78)
-        gap_tb = 42 if tl and bl else 0
-        content_h = len(tl) * title_step + gap_tb + len(bl) * body_step
-        if content_h <= 1150 or size <= 26:
-            break
-        size -= 3
-    if content_h > 1240:
-        raise ValueError('文字过多，请拆分页面或精简内容')
-
-    if theme == 'soft':
-        card_w = width - 128
-        card_h = min(total - 120, content_h + 130)
-        cx0, cy0 = 64, max(30, (total - card_h) // 2)
-        sh = Image.new('RGBA', img.size, (0, 0, 0, 0))
-        ImageDraw.Draw(sh).rounded_rectangle((cx0, cy0 + 12, cx0 + card_w, cy0 + card_h + 12),
-                                             radius=36, fill=(60, 80, 70, 26))
-        img = Image.alpha_composite(img.convert('RGBA'), sh).convert('RGB')
-        d = ImageDraw.Draw(img)
-        d.rounded_rectangle((cx0, cy0, cx0 + card_w, cy0 + card_h), radius=36, fill='#FFFFFF')
-        tx0 = cx0 + 62
-        ty = cy0 + 65
-        title_fill, body_fill, underline = '#1F4438', '#46534D', '#2E7A58'
-    elif theme == 'duotone':
-        content_top = max(80, (total - content_h) // 2 - round(total * .03))
-        panel = Image.new('RGBA', img.size, (0, 0, 0, 0))
-        ImageDraw.Draw(panel).rounded_rectangle(
-            (72, content_top - 52, width - 72, min(total - 26, content_top + content_h + 52)),
-            radius=40, fill=(255, 255, 255, 216))
-        img = Image.alpha_composite(img.convert('RGBA'), panel).convert('RGB')
-        d = ImageDraw.Draw(img)
-        tx0 = 128
-        ty = content_top
-        title_fill, body_fill, underline = '#143C31', '#3A463F', '#2E7A58'
-    else:  # minimal
-        content_top = max(110, (total - content_h) // 2 - round(total * .02))
-        tx0 = margin
-        ty = content_top
-        title_fill, body_fill, underline = '#143C31', '#3E4C46', '#2E7A58'
-
-    if tl:
-        for line in tl:
-            d.text((tx0, ty), line, font=title_font, fill=title_fill)
-            ty += title_step
-        first_w = d.textlength(tl[0], font=title_font)
-        d.rectangle((tx0, ty + 8, tx0 + max(110, round(first_w * .55)), ty + 14), fill=underline)
-        ty += 46
-    ty += gap_tb
-    for line in bl:
-        d.text((tx0, ty), line, font=body_font, fill=body_fill)
-        ty += body_step
-    _page_chip(d, width, total, page, total_pages)
-    b = io.BytesIO()
-    img.save(b, format='PNG')
-    return b.getvalue(), {'width': width, 'height': total, 'method': f'program_{theme}'}
 
 
 # ---------------------------------------------------------------- 微信对话卡
@@ -340,6 +165,9 @@ def export_zip(task, image_files):
     buffer=io.BytesIO()
     with zipfile.ZipFile(buffer,'w',zipfile.ZIP_DEFLATED) as z:
         for i,raw in enumerate(image_files,1):z.writestr(f'{i:02d}.png',raw)
+        if task.get('expression',{}).get('status')=='accepted':
+            z.writestr('SKILL.md',task['expression']['prompt'])
+            z.writestr('本篇资料单.json',json.dumps(task.get('material_sheet',{}),ensure_ascii=False,indent=2))
         z.writestr('标题正文.txt',task['draft']['title']+'\n\n'+task['draft']['body'])
         evidence={'bundle_id':task['request']['bundle_id'],'case':task['case'],
                   'selection':task['selection'],'analysis':task['analysis'],
@@ -348,9 +176,10 @@ def export_zip(task, image_files):
                   'confirmed_analysis':task['confirmed_analysis'],
                   'pages':task['draft']['pages'],'page_reviews':task.get('page_reviews',{}),
                   'assets':task.get('assets',{}),
-                  'backgrounds':task.get('backgrounds',{}),
+                  'backgrounds':task.get('backgrounds',{}),'renders':task.get('renders',{}),
+                  'generation_attempts':task.get('generation_attempts',[]),
                   'copy_review':task.get('copy_review'), 'sources':task.get('generation_sources',[]),
-                  'limitations':'参考结构不证明爆款或医学正确；内容经用户确认，不代表平台通过。文字卡底图由CogView生成（AI生成装饰，不含文字；标题正文由程序排版叠加）。'}
+                  'limitations':'参考结构不证明爆款或医学正确；内容经用户确认，不代表平台通过。各页实际生成方式、设计模型、skill与视觉检查结果见renders；模板模式没有模型视觉设计。视觉检查只针对可读性与版式，不认证医学事实。'}
         z.writestr('来源记录.json',json.dumps(evidence,ensure_ascii=False,indent=2))
         z.writestr('待核实记录.txt','\n'.join(task['draft'].get('missing_information',[])) or '模型未列出额外待核实项，仍需发布前人工审核。')
     return buffer.getvalue()

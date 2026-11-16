@@ -21,3 +21,16 @@ Thumbs.db
 
 # ── 爬取的第三方数据一律不入库（图片包/浏览器档案等） ──
 collector_profile/
+
+.env.card-model
+.env.card-model.tmp
+
+# Local Netlify folder
+.netlify
+frontend/node_modules/
+frontend/.vite/
+
+# 本地构建产物与采集数据
+frontend/dist/
+/data/
+collector/data/

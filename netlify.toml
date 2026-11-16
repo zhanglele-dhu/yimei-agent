@@ -1,0 +1,12 @@
+[build]
+  base = "frontend"
+  command = "npm run build"
+  publish = "dist"
+
+[build.environment]
+  NETLIFY = "true"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200

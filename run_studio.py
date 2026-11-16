@@ -1,4 +1,4 @@
-"""Local-only launcher. Production starts uvicorn with an explicit access token."""
+"""Launch the local Flask Blueprint application with a generated access token."""
 import os
 import secrets
 import threading
@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 os.chdir(ROOT)
-CURRENT_VERSION = 'cases-20261010-5'
+CURRENT_VERSION = 'cases-20261104-vue1'
 token_path = ROOT / 'outputs' / 'studio' / 'access_token.txt'
 token_path.parent.mkdir(parents=True, exist_ok=True)
 if not token_path.exists():
@@ -61,6 +61,7 @@ def _stop_stale_instance(port):
 
 
 if __name__ == '__main__':
+    os.environ['STUDIO_LOCAL_SESSION'] = '1'
     import socket
     probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
@@ -68,6 +69,7 @@ if __name__ == '__main__':
     except OSError:
         # 端口被占：healthz 可识别时是本工作台。同版本→直接开页面；旧版本→自动升级。
         import json as _json
+        upgraded = False
         try:
             with urllib.request.urlopen('http://127.0.0.1:8010/healthz', timeout=2) as resp:
                 info = _json.load(resp)
@@ -76,7 +78,7 @@ if __name__ == '__main__':
                 if version == CURRENT_VERSION:
                     print('工作台已经在运行了（同一版本），无需重复启动，直接为你打开页面。')
                     opened = webbrowser.open(
-                        'http://127.0.0.1:8010/?v=' + version + '#token=' + os.environ['STUDIO_ACCESS_TOKEN'])
+                        'http://127.0.0.1:8010/')
                     if not opened:
                         print('请手动在浏览器打开：http://127.0.0.1:8010')
                     _pause()
@@ -95,6 +97,7 @@ if __name__ == '__main__':
                     finally:
                         verify.close()
                     print('旧版本已关闭，继续启动新版本…')
+                    upgraded = True
                 else:
                     print('无法自动关闭旧进程（权限不足或系统不支持）。')
                     print('请手动关闭旧的启动窗口，然后重新双击 start_studio.bat。')
@@ -104,27 +107,27 @@ if __name__ == '__main__':
             raise
         except Exception:
             pass
-        print('端口 8010 被其他程序占用，且不是本工作台。')
-        print('请关闭占用该端口的程序后重新双击 start_studio.bat。')
-        _pause()
-        raise SystemExit(1)
+        if not upgraded:
+            print('端口 8010 被其他程序占用，且不是本工作台。')
+            print('请关闭占用该端口的程序后重新双击 start_studio.bat。')
+            _pause()
+            raise SystemExit(1)
     finally:
         probe.close()
 
-    import uvicorn
+    from studio.webapp import app
+    from waitress import serve
     print('门店拍摄与图文助手：http://127.0.0.1:8010')
-    print('本机访问口令（粘贴到网页）：' + os.environ['STUDIO_ACCESS_TOKEN'])
-    print('文字轨：DeepSeek。视觉/画图轨：智谱GLM-4V与CogView，在.env配置VISION_API_KEY后自动启用。')
+    print('正在打开灵感创作台。')
     def open_when_ready():
         for _ in range(40):
             try:
                 with urllib.request.urlopen('http://127.0.0.1:8010/healthz', timeout=1) as response:
                     import json
                     if response.status == 200 and json.load(response).get('version') == CURRENT_VERSION:
-                        webbrowser.open('http://127.0.0.1:8010/?v=' + CURRENT_VERSION
-                                        + '#token=' + os.environ['STUDIO_ACCESS_TOKEN'])
+                        webbrowser.open('http://127.0.0.1:8010/')
                         return
             except OSError:
                 time.sleep(0.5)
     threading.Thread(target=open_when_ready, daemon=True).start()
-    uvicorn.run('studio.api:app', host='127.0.0.1', port=8010)
+    serve(app, host='127.0.0.1', port=8010, threads=8, ident='Yimei Creator')

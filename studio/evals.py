@@ -85,7 +85,7 @@ def classify(task, steps_ok, error=None):
     return 'success', l1, [], [], ['全程无异常']
 
 
-def run_suite(api_module, questions, token):
+def run_suite(api_module, questions, token, generation_mode='model'):
     """依次跑题集。api_module 需已按目标环境完成初始化（含 TestClient）。"""
     from fastapi.testclient import TestClient
     client = TestClient(api_module.app)
@@ -93,7 +93,7 @@ def run_suite(api_module, questions, token):
     results = []
     for q in questions:
         rec = {'id': q['id'], 'question': q['question'], 'status': None,
-               'l1': None, 'l2': [], 'l3': [], 'notes': [], 'case': None}
+               'l1': None, 'l2': [], 'l3': [], 'notes': [], 'case': None,'generation_mode':generation_mode}
         steps_ok = {'retrieval': False, 'analyze': False, 'draft': False, 'make_page': True}
         task = None
         try:
@@ -143,7 +143,8 @@ def run_suite(api_module, questions, token):
                     continue  # 实拍/对话页不在评测范围（无照片来源）
                 r = client.post(f"/api/tasks/{task['id']}/pages/{page['number']}",
                                 json={'revision': task['revision'], 'title': page['title'],
-                                      'text': page['text'], 'confirmed': True, 'resolution': '评测自动确认'})
+                                      'text': page['text'], 'confirmed': True, 'resolution': '评测自动确认',
+                                      'generation_mode':generation_mode})
                 if r.status_code != 200:
                     steps_ok['make_page'] = False
                     raise RuntimeError(f'page {page["number"]} {r.status_code}: {r.text[:120]}')
@@ -201,12 +202,13 @@ def main():
     parser = argparse.ArgumentParser(description='批量评测（真机，产生真实 API 费用）')
     parser.add_argument('--questions', default=str(ROOT / 'evals/questions_m22.json'))
     parser.add_argument('--limit', type=int, default=0, help='只跑前 N 题（0=全部）')
+    parser.add_argument('--generation-mode', choices=('model','template'), default='model')
     args = parser.parse_args()
 
     questions = load_questions(args.questions)
     if args.limit:
         questions = questions[:args.limit]
-    print(f'真机评测 {len(questions)} 题，每题约 3-5 次模型调用，会产生真实费用。')
+    print(f'真机评测 {len(questions)} 题，成品模式：{args.generation_mode}。AI模式还会调用视觉设计与成图检查，会产生真实费用。')
 
     data_dir = Path(tempfile.mkdtemp(prefix='yimei-eval-'))
     os.environ['STUDIO_DATA_DIR'] = str(data_dir)
@@ -220,7 +222,7 @@ def main():
     sys_path_setup()
     from studio import api
 
-    results = run_suite(api, questions, os.environ['STUDIO_ACCESS_TOKEN'])
+    results = run_suite(api, questions, os.environ['STUDIO_ACCESS_TOKEN'],generation_mode=args.generation_mode)
     report, summary = write_report(results, data_dir / 'evals', label='真机基线')
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     print('报告：', report)

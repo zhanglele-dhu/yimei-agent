@@ -1,54 +1,42 @@
-# 门店创作工作台（当前产品）
+# 灵感创作台
 
-唯一启动入口：双击 `start_studio.bat`。它运行 `run_studio.py → studio/api.py`，默认本机8010端口。
+一个本地运行的 AI 图文创作工作台。工作流是：输入一句话 → 自动生成多页大纲 → 用户编辑 → 图片模型逐页生成完整图片 → 单页重绘/生成标题正文 → 历史恢复与图片下载。
 
-## 本目录负责什么
+## 技术结构
 
-- 接收门店需求、参考资料与用户确认。
-- 分步拍摄、图文整理、配文与图片制作、导出和平台反馈复盘。
-- 不负责爬取小红书，不运行定时采集或自动入库，不自动发布。
+- 前端：Vue 3、TypeScript、Vite、Vue Router、Pinia。
+- 后端：Flask 应用工厂和功能 Blueprint；入口在 `studio/webapp.py`，接口模块位于 `studio/blueprints/`。
+- 文本模型：OpenAI 兼容接口，默认 DeepSeek。
+- 图片模型：OpenAI 图片生成兼容接口，默认 Seedream；模型负责生成带文字的完整卡片图片。
+- 持久化：Pinia 的可序列化快照保存在 Local Storage；大纲、文案、图片文件和状态由 `/api/history` 保存到 SQLite/本地文件。导出 ZIP 仅包含图片。
 
-## 目录
+## 运行
 
-| 路径 | 用途 |
-|---|---|
-| studio/ | 当前网页、接口、模型拆解与本地图片排版 |
-| collector/ | 小红书案例采集器与资料包导出（采集→分析→创作链路的入口） |
-| analysis/ | 高赞图文归因分析脚本与聚合统计（不含采集的原始数据） |
-| design/frontend-review.html | 视觉参考稿；实际工作台入口已接入同一套界面 |
-| knowledge/procedures.md | M22事实资料摘要 |
-| knowledge/shooting_guide.json | 当前运行的创作指南（不是经过验证的爆款规律） |
-| outputs/studio/ | 用户任务、原图、生成图、访问口令和唯一 evidence 证据目录，必须保留且不能公开（已列入 .gitignore） |
-| test_studio.py | 离线接口测试 |
-| BADCASES.md | 产品问题记录 |
-| DEPLOYMENT.md | 安装与部署说明 |
+在项目根目录双击 `start_studio.bat`。开发者首次准备环境时按 [DEPLOYMENT.md](DEPLOYMENT.md) 安装 Python 依赖，并在 `frontend` 目录运行 `npm ci && npm run build`。
 
-## 与采集端的衔接
+在“模型设置”页填写文本和图片模型接口。密钥只写入本机 `.env.card-model`，不会放进 Local Storage、历史记录或前端构建文件。不要在没有授权的情况下调用付费模型；这里只检查代码构建和本地页面，不自动生成图片。
 
-案例资料包由本仓库 `collector/export_cases.py` 导出（ZIP），在工作台"案例资料库"导入并保存独立版本。采集的原始数据（图片、笔记全文、浏览器档案）只存在于本地运行环境，不进入仓库。
+## 维护前端
 
-## 当前流程（2026-09-17）
+先从 [frontend/README.md](frontend/README.md) 入门；RedInk Vue 源码的结构分析在 [frontend/REDINK-FRONTEND-ANALYSIS.md](frontend/REDINK-FRONTEND-ANALYSIS.md)。前端源码仅在 `frontend/src`，不要编辑构建后的 `studio/static/vue-app/assets/*`。
 
-输入主题 → 主题硬闸门筛出候选 → AI 对候选逐一打相关性分(1-10) → 收益函数排序（综合分=相关性×7+点赞归一化×30，相关性≤3淘汰）→ 展示最高分案例的原图与逐页OCR拆解 → 修改并确认大纲 → 逐页制作文字卡或保存实拍 → 确认标题正文 → 导出ZIP。模型打分失败时自动回退关键词规则并如实标注。
+## 模块图
 
-- 当前资料包包含87篇案例、233张原图，最高赞只指已导入样本，不代表全平台。
-- 相关性由透明关键词规则判断，可能漏掉语义相关案例；用户应核对选中案例。没有相关案例就停止并提示补资料或改主题。
-- 双模型轨：文字轨 DeepSeek（打分/拆解/写作）；视觉轨智谱 GLM-4V（看参考帖原图做视觉分析，OCR过少的高赞帖看图补判相关性）；画图轨智谱 CogView（生成文字卡装饰底图，不含文字）。视觉轨未配置时自动降级为仅 OCR+正文；底图失败时自动降级纯色底。标题正文始终由程序排版叠加，保证文字准确。
-- 每页绑定原帖页码；调用记录展示实际输入资料和输出。来源与待核实项单独导出。
-- 实拍原文件保存，本地排版不重绘、不缩放原图内容；纯文字卡无需上传照片。用户实拍不发送模型。
-- 保存的进度可恢复；未点击保存的编辑不保证恢复。旧任务只读保留。
-- 这不是自动发布或平台合规保证，也尚未发布为微信小程序。
+```mermaid
+flowchart LR
+  Browser[Vue + Pinia] --> API[Flask /api Blueprint]
+  API --> Outline[outline blueprint]
+  API --> Content[content blueprint]
+  API --> Generation[generation blueprint]
+  API --> History[history blueprint]
+  API --> Settings[settings blueprint]
+  Outline --> TextModel[文本模型]
+  Content --> TextModel
+  Generation --> ImageModel[图片模型]
+  History --> Store[(SQLite + 图片目录)]
+  Browser --> Local[(Local Storage 快照)]
+```
 
-## 当前前端入口
+## 独立实现边界
 
-`studio/static/index.html` 使用 `design/frontend-review.html` 的视觉结构，`studio/static/app.js` 已绑定当前 API：导入案例、创建任务、选相关最高赞案例、逐步确认检索/语言/视觉/资料/写作结果、逐页共创、导出 ZIP 和反馈分析。每一步都可退回并填写建议；后端在 `analysis-stage` 记录决定并只重做当前步骤。反馈只在已有草稿时写入对应任务；小红书账号登录与一键发布仍是后续接口，不会在界面中模拟成功。
-
-## 已验证示例
-
-`outputs/studio/evidence/RUN-20260917_M22_demo/m22_demo.zip`：真实DeepSeek两次调用，参考row000（2122赞），3张文字卡、标题正文、来源记录和待核实记录。验收时由AI代走确认步骤，并记录修改；不代表用户已认可成品或同意发布。
-
-11项工作台离线测试通过；真实API完成导出与保存后重载。浏览器逐步点击、容器部署和用户审美验收尚未完成。状态与证据见BADCASES.md。
-
-## 历史实现
-
-旧写稿、搜索、定时入库、向量库、旧入口和旧文档已整体移至 `E:\aiPM\历史项目归档\20260916_项目边界整理_211402\yimei-agent`。这里不再保留旧程序副本。当前目录尚未建立有效Git仓库；归档前的.git为空目录。
+RedInk 仓库以 CC BY-NC-SA 4.0 发布。本项目借鉴其产品阶段和前后端职责划分，独立编写代码、文案、Prompt 与视觉，不复制 RedInk 源码、素材或品牌；商业分发前应单独确认适用的授权边界。

@@ -19,6 +19,19 @@ class CreateTask(BaseModel):
     question: str = Field(min_length=1, max_length=1000)
     facts: str = Field(default='', max_length=6000)
     bundle_id: str
+    research_id: str = Field(default="", max_length=32)
+    workflow: Literal["legacy", "expression-first"] = "legacy"
+    auto_flow: bool = False
+    page_count: int = Field(default=0, ge=0, le=8)
+    writing_style: Literal["friend-sharing", "concise-direct", "patient-explainer", "neutral", "cautionary", "enthusiastic"] = "friend-sharing"
+
+class IntentInput(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+    project: str = Field(default='', max_length=100)
+    audience: str = Field(default='', max_length=300)
+
+class CatalogInput(BaseModel):
+    bundle_id: str = Field(min_length=24,max_length=24)
 
 class Revision(BaseModel):
     revision: int
@@ -50,6 +63,10 @@ class OutlinePage(BaseModel):
     instruction: str
     visual_spec: str = Field(default='', max_length=600)
     source_pages: list[int] = Field(min_length=1)
+    reader_question: str = ''
+    key_points: list[str] = Field(default_factory=list)
+    new_terms: list[str] = Field(default_factory=list)
+    word_budget: int = 180
 
 class OutlinePageCompact(BaseModel):
     kind: Literal['text', 'photo', 'chat'] = Field(description='页面类型：text=文字卡，photo=实拍页，chat=微信对话卡')
@@ -182,24 +199,110 @@ class PageContent(BaseModel):
     pending: list[str] = Field(default_factory=list)
     dialog: list[DialogTurn] = Field(default_factory=list)
 
+class AudienceBrief(BaseModel):
+    reader: str = Field(min_length=1, max_length=300, description='根据用户需求判断的目标读者及已有知识，不猜测人口属性')
+    questions: list[str] = Field(min_length=1, max_length=5, description='这些读者希望本篇回答的具体问题')
+    approach: str = Field(min_length=1, max_length=500, description='本篇如何用读者熟悉的说法、分点顺序和例子解释；不输出推理过程')
+    defer_topics: list[str] = Field(default_factory=list, description='本篇不必展开的次要术语或细节，不能遗漏用户明确要求的内容')
+
 class Draft(BaseModel):
+    audience_brief: AudienceBrief | None = Field(default=None, description='写作前的受众与表达方案；兼容旧草稿，可为空；新生成时应填写')
     title: str = Field(min_length=1, max_length=100)
     body: str = Field(min_length=1, max_length=8000)
     pages: list[PageContent]
     missing_information: list[str] = Field(default_factory=list)
 
+class EditorialPlan(BaseModel):
+    audience_brief: AudienceBrief
+    direction: str = Field(min_length=1, max_length=300)
+    reading_goal: str = Field(min_length=1, max_length=300)
+    reference_use: str = Field(min_length=1, max_length=600)
+
+class QuestionPage(OutlinePage):
+    reader_question: str = Field(min_length=1)
+    key_points: list[str] = Field(min_length=1, max_length=4)
+    new_terms: list[str] = Field(default_factory=list, max_length=3)
+    word_budget: int = Field(default=180, ge=80, le=260)
+
+class QuestionOutline(BaseModel):
+    reference_takeaway: str = Field(min_length=1)
+    adaptation: str = Field(min_length=1)
+    pagination_reason: str = Field(min_length=1)
+    pages: list[QuestionPage] = Field(min_length=1, max_length=8)
+
+class PageContentCheck(BaseModel):
+    number: int
+    passed: bool
+    issues: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
+
+class ExpressionCheck(BaseModel):
+    purpose_kept: bool
+    structure_kept: bool
+    tone_kept: bool
+    issues: list[str] = Field(default_factory=list)
+    suggestions: list[str] = Field(default_factory=list)
+    summary: str
+
+
+class DraftContentReview(BaseModel):
+    expression_check: ExpressionCheck | None = None
+    audience_fit: bool
+    direction_fit: bool
+    question_coverage: bool
+    readable: bool
+    source_supported: bool
+    summary: str
+    issues: list[str] = Field(default_factory=list)
+    pages: list[PageContentCheck] = Field(min_length=1)
+
+class ExpressionDraftReview(DraftContentReview):
+    expression_check: ExpressionCheck
+
+
+class SharingExpressionCheck(ExpressionCheck):
+    sharing_voice: bool
+    draft_quotes: list[str] = Field(min_length=1, max_length=3)
+
+class SharingDraftReview(ExpressionDraftReview):
+    expression_check: SharingExpressionCheck
+
+
 class PageEdit(Revision):
     title: str = Field(max_length=60)
     text: str = Field(max_length=2000)
     confirmed: bool
+    automatic: bool = False
     resolution: str = Field(default='', max_length=2000)
     regenerate_background: bool = False
     card_theme: Literal['minimal', 'soft', 'duotone', 'ai', 'plain'] = 'minimal'
+    generation_mode: Literal['model', 'seedream', 'template'] = 'model'
+    regenerate_design: bool = False
+
+
+class CardDesign(BaseModel):
+    direction: str = Field(min_length=1, max_length=500, description='简短说明本页的构图、层级与配色设计')
+    html: str = Field(min_length=1, max_length=16000, description='卡片内部HTML片段，仅使用给定内容槽位，不带script/style/外部链接')
+    css: str = Field(min_length=1, max_length=18000, description='为这页定制的CSS，1080x1440；无外部资源、无新增文字')
+
+
+class CardModelSettings(BaseModel):
+    base_url: str = Field(min_length=1, max_length=500)
+    model: str = Field(min_length=1, max_length=200)
+    review_model: str = Field(default='', max_length=200)
+    api_key: str = Field(default='', max_length=5000)
+
+
+class CardVisualCheck(BaseModel):
+    passed: bool = Field(description='文字可读、无截断遮挡、图片完整、层级清晰时才为true；不做医学事实认证')
+    summary: str = Field(min_length=1, max_length=500)
+    issues: list[str] = Field(default_factory=list, max_length=10)
 
 class CopyEdit(Revision):
     title: str = Field(min_length=1, max_length=100)
     body: str = Field(min_length=1, max_length=8000)
     confirmed: bool
+    automatic: bool = False
     resolution: str = Field(default='', max_length=2000)
 
 class Progress(Revision):
@@ -214,3 +317,64 @@ class FeedbackAnalysis(BaseModel):
     hypotheses: list[str]
     next_actions: list[str]
     missing_information: list[str]
+
+
+class ExpressionEvidence(BaseModel):
+    sample_id: str
+    quote_id: str = ''
+    quote: str = Field(default='', max_length=240)
+    lesson: str = Field(min_length=1, max_length=240)
+
+class ExpressionStudy(BaseModel):
+    audience: str = Field(min_length=1, max_length=200)
+    opening: str = Field(min_length=1, max_length=240)
+    structure: list[str] = Field(min_length=1, max_length=6)
+    tone: str = Field(min_length=1, max_length=240)
+    sentence_pattern: str = Field(min_length=1, max_length=240)
+    presentation: str = Field(min_length=1, max_length=300)
+    good_example: str = Field(min_length=1, max_length=300)
+    bad_example: str = Field(min_length=1, max_length=300)
+    knowledge_needs: list[str] = Field(min_length=1, max_length=6)
+    evidence: list[ExpressionEvidence] = Field(min_length=1, max_length=5)
+
+class ExpressionConfirm(Revision):
+    prompt: str = Field(min_length=40, max_length=8000)
+    automatic: bool = False
+
+class MaterialSupport(BaseModel):
+    source_id: str
+    quote_id: str = ''
+    quote: str = Field(default='', max_length=500)
+
+class MaterialItem(BaseModel):
+    need: str = Field(min_length=1, max_length=240)
+    answer: str = Field(min_length=1, max_length=700)
+    supports: list[MaterialSupport] = Field(min_length=1, max_length=4)
+    scope: str = Field(default='', max_length=300)
+
+class MaterialSheet(BaseModel):
+    items: list[MaterialItem] = Field(default_factory=list, max_length=10)
+    missing: list[str] = Field(default_factory=list, max_length=10)
+
+
+
+class ToneBatchInput(BaseModel):
+    bundle_id: str = Field(default='', max_length=24)
+
+class ToneVersion(Revision):
+    writing_style: str = Field(min_length=1, max_length=50)
+
+class ToneRuleCheck(BaseModel):
+    rule_id: str
+    passed: bool
+    quote: str = Field(min_length=1, max_length=500)
+    reason: str = Field(min_length=1, max_length=400)
+
+class ToneCheck(BaseModel):
+    style_id: str
+    passed: bool
+    criteria: list[ToneRuleCheck] = Field(min_length=1, max_length=8)
+    summary: str
+
+class ToneDraftReview(ExpressionDraftReview):
+    tone_check: ToneCheck

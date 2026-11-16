@@ -1,40 +1,45 @@
-# 运行与部署
+# 本机部署
 
-## 本机
+## 首次准备
 
-双击start_studio.bat，保持窗口打开。浏览器自动打开并带入本机访问口令；口令保护任务、照片和模型接口，不是个人账户。
+1. Python 3.11+ 和 Node.js 20+ 已安装。
+2. 在项目根目录创建虚拟环境并安装服务依赖：
 
-新机器：
-```powershell
-uv venv .venv-studio --python 3.13
-uv pip install --python .venv-studio/Scripts/python.exe -r requirements-studio.lock.txt
-.\.venv-studio\Scripts\python.exe run_studio.py
-```
+   ```powershell
+   py -3.13 -m venv .venv-studio
+   .\.venv-studio\Scripts\python.exe -m pip install -r requirements-studio.lock.txt
+   ```
 
-文字轨：.env 内 LLM_PROVIDER=deepseek 与 DEEPSEEK_API_KEY。视觉/画图轨：VISION_PROVIDER=glm + VISION_API_KEY（智谱 open.bigmodel.cn 的 API Key，视觉与画图共用）。视觉模型走梯队：默认主模型 glm-4.5v（.env 的 STUDIO_VISION_MODEL 可覆盖），主模型连续失败自动换备用 glm-4v-plus，再失败由文字轨修复结构或自动降级按文字拆解；glm-4v 系输出上限 2048，新模型 4096。画图轨默认 cogview-4（STUDIO_IMAGE_MODEL 可覆盖）。视觉轨未配置时自动降级。不要提交.env。用户实拍仅保存及本地排版，本版本不发送任何模型。
+3. 构建 Vue 页面：
 
-任务与图片在outputs/studio；先备份该目录再迁移机器。多人共用口令会共用数据，本版是单工作区演示。
+   ```powershell
+   cd frontend
+   npm ci
+   npm run typecheck
+   npm run build
+   cd ..
+   ```
+
+4. 双击 `start_studio.bat`，浏览器打开 `http://127.0.0.1:8010`。后端由 Waitress 运行，网页和 `/api` 使用同源地址。
+
+## 模型配置
+
+在“模型设置”输入文本模型和图片模型的 HTTPS 兼容接口、模型名称与 API Key。凭据保存到 `.env.card-model`；这个文件列入 `.gitignore`。输入后后端会更新当前进程配置，不需要把密钥写进前端。
+
+生成大纲/文案会调用文本模型；生成/重绘图片会调用图片模型并产生费用。浏览器端构建与本地接口检查不执行这些模型调用。
+
+## 数据保存与备份
+
+- 浏览器当前创作状态：Local Storage。
+- 服务端历史：`outputs/studio/tasks.sqlite3` 中的 `creator_records` 表。
+- 生成图片：`outputs/studio/cards/<task_id>/`。
+
+建议同时备份 SQLite 文件和 `cards` 目录。导出的 ZIP 仅含图片文件。
+
+## 更新前端
+
+修改 `frontend/src` 后，在 `frontend` 文件夹执行 `npm ci`、`npm run typecheck`、`npm run build`。再关闭旧启动窗口，重新双击 `start_studio.bat`。当前 `/healthz` 版本为 `cases-20261104-vue1`。
 
 ## 容器
 
-Dockerfile使用requirements-studio.lock.txt及当前studio、knowledge。配置STUDIO_ACCESS_TOKEN（至少24字符）、模型密钥，挂载/data以持久保存数据。公网需要HTTPS、身份和资源配额等部署配置；本次未执行容器构建或上线，不等于微信小程序已发布。
-
-## 检查
-
-```powershell
-.\.venv-studio\Scripts\python.exe -m unittest test_studio -v
-```
-
-这些是模拟模型的接口测试，不替代真实模型、图片效果、浏览器及容器测试。
-
-## 案例导入与恢复
-
-在装有采集环境的机器上运行 `collector/export_cases.py`（本仓库内的采集器代码快照；带虚拟环境的实时采集目录在本机另处维护），得到案例资料 ZIP。在工作台"案例资料库"选择ZIP并导入；同一包重复导入复用版本。已创建任务保留选中的原版本，不会被新包静默替换。
-
-工作台首页使用 `studio/static/index.html` 的视觉壳，实际交互由 `studio/static/app.js` 调用当前 API。连接后先在首页“案例资料管理”导入 ZIP，再点击“开始”走主题、案例、拆解、共创、导出；拆解中的检索、语言、视觉、资料、写作五步逐一确认，退回时填写建议后通过 `analysis-stage` 重做当前步；右上角“反馈”用于给已有草稿记录平台原文并请求分析。
-
-刷新后恢复最近任务，或从任务列表选择；任务可删除（连同照片与成品图一起清除，删除前需确认）。仅已保存内容持久化在SQLite，照片和输出文件也必须一起备份。模型失败不自动循环调用，显示错误后手动重试；原任务不丢失。
-
-更新后先关闭旧启动窗口，再双击start_studio.bat。healthz应返回版本`cases-20261010-5`。启动器只在版本匹配时自动打开页面；不强制结束其他进程。
-
-2026-09-17已真实调用DeepSeek跑通一条示例，完整运行证据在`outputs/studio/evidence/RUN-20260917_M22_demo/`。当前没有可用浏览器自动化界面，浏览器刷新/点击的实际体验仍待验收；API持久化与恢复已测。容器尚未构建验证。
+Docker 镜像入口为 `studio.webapp:app`，通过 Waitress 提供 Flask Blueprint API 和 Vue 构建文件。容器持久化时将 `/data` 挂载到可靠存储，并设置 `STUDIO_DATA_DIR=/data` 与 `STUDIO_ACCESS_TOKEN`。容器部署尚未运行验证。

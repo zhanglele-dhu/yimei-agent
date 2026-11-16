@@ -17,10 +17,13 @@ os.environ['STUDIO_ACCESS_TOKEN']='test-only-access-key-not-for-production'# 测
 # 不关闭会让未 mock 的视觉调用打到真实 API，慢、花钱、结果不确定）。
 # 视觉相关用例自行用 patch.dict(os.environ, ...) 打开。
 os.environ['VISION_PROVIDER']=''
+os.environ['ARK_API_KEY']=''
+os.environ['STUDIO_CARD_PROVIDER']=''
+os.environ['DEEPSEEK_API_KEY']=''  # Unmocked calls fail locally, never spend live API quota.
 from fastapi.testclient import TestClient
 from PIL import Image,ImageChops
 from studio import api,cases,llm,rendering,runlog
-from studio.models import Analysis,AnalysisCompact,Draft,FeedbackAnalysis,CaseRanking
+from studio.models import Analysis,AnalysisCompact,Draft,FeedbackAnalysis,CaseRanking,EditorialPlan,QuestionOutline,DraftContentReview
 
 
 def picture():
@@ -38,7 +41,9 @@ def bundle(missing=False,case_empty=False):
     lower=copy.deepcopy(note);lower.update(id='row001',likes=80)
     irrelevant=copy.deepcopy(note);irrelevant.update(id='row002',title='肺结节分析',likes=99999)
     irrelevant['pages'][0]['ocr']='肺结节分型'
-    manifest={'schema_version':1,'version':'test1','cases':[] if case_empty else [note,lower,irrelevant]}
+    nursing=copy.deepcopy(note);nursing.update(id='row003',title='M22术后护理',likes=55)
+    nursing['pages'][0]['ocr']='M22术后护理与恢复'
+    manifest={'schema_version':1,'version':'test1','cases':[] if case_empty else [note,lower,irrelevant,nursing]}
     b=io.BytesIO()
     with zipfile.ZipFile(b,'w') as z:
         z.writestr('manifest.json',json.dumps(manifest,ensure_ascii=False))
@@ -51,7 +56,7 @@ def bundle_many_pages(count=13):
     data=picture();member='images/row000_01.png'
     pages=[{'number':i,'ocr':f'M22光子嫩肤科普第{i}页','image':member,
             'image_sha256':hashlib.sha256(data).hexdigest(),'ocr_status':'available'} for i in range(1,count+1)]
-    note={'id':'row000','title':'M22超多页案例','body':'结构说明','likes':3000,'author':'样本作者',
+    note={'id':'row000','title':'M22仪器对比多页案例','body':'结构说明','likes':3000,'author':'样本作者',
           'url':'https://www.xiaohongshu.com/explore/example','collected_at':'2026-09-15','pages':pages,'research':None}
     manifest={'schema_version':1,'version':'test-many','cases':[note]}
     b=io.BytesIO()
@@ -62,7 +67,24 @@ def bundle_many_pages(count=13):
 
 
 def fake_generate(schema,instruction,sources,images=None,outline_anchor=None):
-    if schema in (Analysis,AnalysisCompact):
+    if schema is EditorialPlan:
+        result=EditorialPlan(audience_brief={'reader':instruction['request']['audience'],
+            'questions':['M22是什么？','怎样理解不同特点？'],'approach':'按读者问题分点介绍','defer_topics':[]},
+            direction='M22入门科普',reading_goal='理解基础知识',reference_use='借鉴固定维度的介绍方法')
+    elif schema is QuestionOutline:
+        requested=instruction.get('requested_pages') or 2
+        names=['封面问题','三个确认问题']+[f'知识要点{i}' for i in range(3,requested+1)]
+        result=QuestionOutline(reference_takeaway='固定维度对比',adaptation='借鉴逐点介绍',pagination_reason='每页一个问题',
+            pages=[{'kind':'text','purpose':name,'instruction':'分点介绍','reader_question':name,
+                    'key_points':['一个特点','另一个特点'],'new_terms':['M22'],'source_pages':[1]}
+                   for name in names[:requested]])
+    elif schema is DraftContentReview:
+        result=DraftContentReview(audience_fit=True,direction_fit=True,question_coverage=True,readable=True,source_supported=True,
+            summary='内容适合读者，可进入成图',pages=[{'number':p['number'],'passed':True} for p in instruction['draft']['pages']])
+    elif schema.__name__=='CreationIntent':
+        from studio.semantic import infer_rules
+        result=infer_rules(instruction['user_text'],instruction.get('project_hint',''),instruction.get('audience_hint',''))
+    elif schema in (Analysis,AnalysisCompact):
         c=next(s['content'] for s in sources if s['id']=='CASE')
         data=dict(summary='原帖用固定字段比较，新内容借鉴组织顺序。',
             original_pages=[{'number':p['number'],'form':'仅按OCR推测为对比文字','observation':'有对比问句',
@@ -97,7 +119,52 @@ def fake_generate(schema,instruction,sources,images=None,outline_anchor=None):
 
 
 class StudioTests(unittest.TestCase):
+    def test_reference_vision_reuses_ark_and_sends_images(self):
+        from types import SimpleNamespace
+        result = {'summary':'参考原图分析', 'original_pages':[{'number':1,'form':'对比表格',
+            'observation':'横向比较设备，蓝色标题与绿色标记','ocr_quote':'','borrow':'沿用同维度对照'}],
+            'borrow':['固定维度对照'], 'missing_information':[],
+            'outline':[{'kind':'text','purpose':'M22基础科普','instruction':'分层讲解原理','source_pages':[1]}]}
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(result,ensure_ascii=False)))],usage=None)
+        with patch.dict(os.environ,{'VISION_PROVIDER':'glm','ARK_API_KEY':'test-ark-key',
+                'ARK_CARD_REVIEW_MODEL':'test-doubao-vision','STUDIO_CARD_PROVIDER':''}), patch('openai.OpenAI') as client:
+            client.return_value.chat.completions.create.return_value=response
+            parsed,trace=llm.generate_vision(AnalysisCompact,{'goal':'M22科普'},[],[{'number':1,'data':picture()}])
+            self.assertTrue(llm.supports_vision())
+            self.assertEqual(client.call_args.kwargs['api_key'],'test-ark-key')
+            call=client.return_value.chat.completions.create.call_args.kwargs
+            self.assertEqual(call['model'],'test-doubao-vision')
+            self.assertTrue(call['messages'][1]['content'][0]['image_url']['url'].startswith('data:image/jpeg;base64,'))
+            self.assertEqual(call['extra_body']['thinking']['type'],'disabled')
+            self.assertEqual(trace['provider'],'ark-vision')
+            self.assertEqual(parsed.original_pages[0].form,'对比表格')
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_visual_redo_updates_basis_and_keeps_prior_approvals(self,mock):
+        t=self.create()
+        t=self.post(t,'/analyze')
+        for stage in ('retrieval','language'):
+            t=self.post(t,'/analysis-stage',stage=stage,decision='accept')
+        def vision(schema,instruction,sources,images,outline_anchor=None):
+            output,trace=fake_generate(schema,instruction,sources,images,outline_anchor)
+            trace['reference_image_pages']=[p['number'] for p in images]
+            return output,trace
+        with patch('studio.llm.supports_vision',return_value=True),patch('studio.llm.generate_vision',side_effect=vision) as visual:
+            t=self.post(t,'/analysis-stage',stage='visual',decision='reject',feedback='直接看原图后提出创作建议')
+        self.assertTrue(visual.called)
+        self.assertEqual(t['analysis_basis'],'原图+OCR+正文')
+        self.assertEqual(t['analysis_stages']['language']['status'],'accepted')
+        self.assertEqual(t['analysis_stages']['visual']['status'],'ready')
+        with patch('studio.llm.supports_vision',return_value=True),patch('studio.llm.generate_vision',side_effect=RuntimeError('offline simulated error')):
+            t=self.post(t,'/analysis-stage',stage='visual',decision='reject',feedback='再看原图')
+        self.assertNotEqual(t['analysis_basis'],'原图+OCR+正文')
+        text_call=next(call.args[1] for call in reversed(mock.call_args_list) if 'visual_input' in call.args[1])
+        self.assertFalse(text_call['visual_input'])
+
     def setUp(self):
+        offline=patch('studio.llm.generate',side_effect=fake_generate)
+        offline.start();self.addCleanup(offline.stop)
+        api._VISION_BREAKER['fails']=0  # 测试隔离：熔断计数不复位会跨用例泄漏
         self.client=TestClient(api.app)
         self.client.headers['Authorization']='Bearer '+os.environ['STUDIO_ACCESS_TOKEN']
         r=self.client.post('/api/bundles',files={'bundle':('cases.zip',bundle(),'application/zip')})
@@ -109,6 +176,7 @@ class StudioTests(unittest.TestCase):
         self.assertEqual(r.status_code,200,r.text);return r.json()
 
     def post(self,task,path,**extra):
+        if path.startswith('/pages/') and not path.endswith('/photo'):extra.setdefault('generation_mode','template')
         r=self.client.post('/api/tasks/'+task['id']+path,json={'revision':task['revision'],**extra})
         self.assertEqual(r.status_code,200,r.text);return r.json()
 
@@ -124,6 +192,26 @@ class StudioTests(unittest.TestCase):
             t=self.post(t,f"/pages/{p['number']}",title=p['title'],text=p['text'],confirmed=True)
         return t
 
+    def test_local_session_only_bootstraps_loopback_same_origin(self):
+        local = TestClient(api.app, base_url='http://127.0.0.1:8010', client=('127.0.0.1', 50000))
+        headers = {'X-Studio-Local': '1', 'Sec-Fetch-Site': 'same-origin'}
+        with patch.dict(os.environ, {'STUDIO_LOCAL_SESSION': ''}):
+            self.assertEqual(local.get('/api/local-session', headers=headers).status_code, 403)
+        with patch.dict(os.environ, {'STUDIO_LOCAL_SESSION': '1'}):
+            response = local.get('/api/local-session', headers=headers)
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.headers['cache-control'], 'no-store')
+            self.assertEqual(local.get('/api/tasks').status_code, 401)
+            self.assertEqual(local.get('/api/tasks', headers={'Authorization': 'Bearer '+response.json()['access_token']}).status_code, 200)
+            for extra in ({'Host': 'evil.example'}, {'Origin': 'http://localhost:9999'},
+                          {'Sec-Fetch-Site': 'cross-site'}, {'X-Studio-Local': ''}):
+                self.assertEqual(local.get('/api/local-session', headers={**headers, **extra}).status_code, 403)
+            remote = TestClient(api.app, base_url='http://127.0.0.1:8010', client=('192.168.1.20', 50000))
+            self.assertEqual(remote.get('/api/local-session', headers=headers).status_code, 403)
+        html = local.get('/').text
+        self.assertNotIn('id="accessModal"', html)
+        self.assertNotIn('连接工作台', html)
+
     def test_auth_cache_and_page_contract(self):
         self.assertEqual(TestClient(api.app).get('/api/tasks').status_code,401)
         import re
@@ -134,15 +222,14 @@ class StudioTests(unittest.TestCase):
         self.assertNotIn('catch(e){}await render()',script.text)
 
     @patch('studio.llm.generate',side_effect=fake_generate)
-    def test_create_fills_demo_facts_when_empty(self,mock):
-        """门店事实为空时后端自动填入示例资料（带示例标记），避免满屏待核实。"""
+    def test_create_preserves_empty_facts_without_demo_marketing(self,mock):
+        """科普不自动插入示例门店价格和到店引流要求。"""
         from studio.prompts import DEMO_SHOP_FACTS
         r=self.client.post('/api/tasks',json={'project':'M22','audience':'第一次了解的顾客','question':'M22仪器有什么区别',
                                              'facts':'','bundle_id':self.bundle_id})
         self.assertEqual(r.status_code,200,r.text)
         t=r.json()
-        self.assertEqual(t['request']['facts'],DEMO_SHOP_FACTS)
-        self.assertIn('示例',t['request']['facts'])
+        self.assertEqual(t['request']['facts'],'')
 
     def test_demo_facts_front_back_consistent(self):
         """前端预填与后端兜底必须是同一份示例资料（防止两边漂移）。"""
@@ -215,7 +302,7 @@ class StudioTests(unittest.TestCase):
         questions = [{'id': 'q01', 'question': 'M22仪器有什么区别', 'audience': '第一次了解的顾客'},
                      {'id': 'q02', 'question': '做完M22怎么护理', 'audience': '第一次了解的顾客'}]
         with patch('studio.llm.generate', side_effect=fake_generate):
-            results = evals.run_suite(api, questions, os.environ['STUDIO_ACCESS_TOKEN'])
+            results = evals.run_suite(api, questions, os.environ['STUDIO_ACCESS_TOKEN'],generation_mode='template')
         self.assertEqual([r['status'] for r in results], ['success', 'success'])
         report, summary = evals.write_report(results, api.DATA / 'evals', label='离线验证')
         self.assertEqual(summary['total'], 2)
@@ -329,6 +416,20 @@ class StudioTests(unittest.TestCase):
         if log:
             self.assertIn('已自动重试',log)
 
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_render_separates_production_notes_and_keeps_editable_source(self,mock):
+        task=self.ready()
+        text='先把自己的咨询问题整理好。\n\n实拍建议：拍摄前台，不出现顾客信息。'
+        task=self.post(task,'/pages/1',title='咨询前先准备',text=text,confirmed=True,card_theme='soft')
+        self.assertEqual(task['draft']['pages'][0]['text'],text)
+        meta=task['renders']['1']
+        self.assertEqual(meta['layout_version'],'xhs-editorial-v1')
+        self.assertEqual(meta['public_text'],'先把自己的咨询问题整理好。')
+        self.assertEqual(len(meta['production_notes']),1)
+        response=self.client.get('/api/tasks/'+task['id']+'/pages/1/render')
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(Image.open(io.BytesIO(response.content)).size,(1080,1440))
+
     def test_render_themed_fits_max_text(self):
         """真机基线 bad case 修复：上限文本(700字+标题)在新版式容量下不再溢出。"""
         title='第一次了解M22的顾客最关心的问题与解答'
@@ -382,6 +483,33 @@ class StudioTests(unittest.TestCase):
         self.assertIn('来源: 测试来源', info['source_line'])
         self.assertTrue((corpus / 'store' / 'meta.json').exists())
 
+    def test_vision_breaker_opens_and_resets(self):
+        """视觉轨熔断器：连续失败3次后跳过视觉轨直走文字轨；用户退回重做时复位再试。"""
+        t=self.create()
+        self.addCleanup(lambda: api._VISION_BREAKER.update(fails=0))
+        with patch.dict(os.environ,{'VISION_PROVIDER':'glm','VISION_API_KEY':'test-key'}):
+            with patch('studio.llm.generate_vision', side_effect=RuntimeError('视觉失败')):
+                t=self.post(t,'/analyze')
+                t=self.post(t,'/analyze')
+            self.assertEqual(api._VISION_BREAKER['fails'],2)
+            with patch('studio.llm.generate_vision', side_effect=RuntimeError('视觉失败')) as mv:
+                t=self.post(t,'/analyze')
+                mv.assert_not_called()                      # 熔断打开：不再调用视觉轨
+            self.assertEqual(api._VISION_BREAKER['fails'],3)
+            self.assertIn('熔断',t['analysis_basis'])
+            # 用户退回重做 = 明确要求再试：先让前置步骤处于已确认，退回 visual 时熔断复位、视觉轨恢复尝试
+            t=self.post(t,'/analysis-stage',stage='retrieval',decision='accept')
+            t=self.post(t,'/analysis-stage',stage='language',decision='accept')
+            t=self.post(t,'/analysis-stage',stage='facts',decision='accept')
+            with patch('studio.llm.generate_vision', side_effect=RuntimeError('重做再试')) as mv:
+                r=self.client.post('/api/tasks/'+t['id']+'/analysis-stage',
+                                   json={'revision':t['revision'],'stage':'visual','decision':'reject',
+                                         'feedback':'再给视觉轨一次机会'})
+                self.assertEqual(r.status_code,200,r.text)
+                mv.assert_called()                          # 熔断复位：视觉轨恢复尝试（仍失败则重新计数）
+            t=r.json()
+            self.assertEqual(api._VISION_BREAKER['fails'],1)
+
     def test_launcher_netstat_parsing(self):
         import run_studio
         sample='\r\n'.join([
@@ -426,6 +554,88 @@ class StudioTests(unittest.TestCase):
         for p in t['draft']['pages']:
             self.assertFalse(p['text'].startswith(p['title']))
         self.assertIn(t['draft']['pages'][0]['text'][:6],t['draft']['pages'][0]['text'])
+
+    @patch('studio.llm.generate',side_effect=fake_generate)
+    def test_reader_workflow_call_order_and_content_review_cache(self,mock):
+        task=self.ready()
+        names=[call.args[0] for call in mock.call_args_list]
+        self.assertLess(names.index(EditorialPlan),names.index(Analysis))
+        self.assertLess(names.index(Analysis),names.index(QuestionOutline))
+        self.assertLess(names.index(QuestionOutline),names.index(Draft))
+        self.assertLess(names.index(Draft),names.index(DraftContentReview))
+        def count():return sum(call.args[0] is DraftContentReview for call in mock.call_args_list)
+        self.assertEqual(count(),1)
+        page=task['draft']['pages'][0]
+        task=self.post(task,'/pages/1',title=page['title'],text=page['text'],confirmed=True)
+        self.assertEqual(count(),1)  # Same copy reuses the accepted review.
+        task=self.post(task,'/pages/1',title=page['title'],text='修改后的科普文字',confirmed=True)
+        self.assertEqual(count(),2)
+
+    def test_reader_pagination_does_not_compress_to_reference_length(self):
+        def five_pages(schema,instruction,sources,images=None,outline_anchor=None):
+            output,trace=fake_generate(schema,instruction,sources,images,outline_anchor)
+            if schema is QuestionOutline:
+                seed=output.pages[0]
+                output.pages=[seed.model_copy(update={'purpose':f'知识点{i}','reader_question':f'读者问题{i}？'}) for i in range(5)]
+            return output,trace
+        with patch('studio.llm.generate',side_effect=five_pages):task=self.ready()
+        self.assertEqual(len(task['case']['pages']),1)
+        self.assertEqual(len(task['analysis']['outline']),5)
+        self.assertEqual(len(task['draft']['pages']),5)
+        self.assertNotIn('压缩',json.dumps(task.get('analysis_polish',[]),ensure_ascii=False))
+
+    def test_content_rejection_prevents_image_calls_and_preserves_old_result(self):
+        with patch('studio.llm.generate',side_effect=fake_generate):
+            task=self.ready();page=task['draft']['pages'][0]
+            task=self.post(task,'/pages/1',title=page['title'],text=page['text'],confirmed=True)
+        old=copy.deepcopy(task['renders']['1'])
+        def reject(schema,instruction,sources,images=None,outline_anchor=None):
+            output,trace=fake_generate(schema,instruction,sources,images,outline_anchor)
+            if schema is DraftContentReview:
+                output.readable=False;output.pages[0].passed=False
+                output.pages[0].issues=['同一页堆了多个不相关术语']
+                output.pages[0].suggestions=['只解释本页问题，其他概念后移']
+            return output,trace
+        with patch('studio.llm.generate',side_effect=reject),patch('studio.seedream_card.generate') as image:
+            response=self.client.post(f"/api/tasks/{task['id']}/pages/1",json={'revision':task['revision'],
+                'title':page['title'],'text':'需要检查的新文案','confirmed':True,'generation_mode':'seedream'})
+        self.assertEqual(response.status_code,422,response.text);image.assert_not_called()
+        saved=api.get_task(task['id'],True)
+        self.assertEqual(saved['renders']['1'],old)
+        self.assertEqual(saved['draft']['pages'][0]['text'],page['text'])
+        self.assertEqual(saved['content_review_candidate']['text'],'需要检查的新文案')
+
+    def test_failed_content_review_has_only_one_automatic_copy_revision(self):
+        def reject(schema,instruction,sources,images=None,outline_anchor=None):
+            output,trace=fake_generate(schema,instruction,sources,images,outline_anchor)
+            if schema is DraftContentReview:
+                output.readable=False;output.issues=['入门文案术语过密']
+            return output,trace
+        with patch('studio.llm.generate',side_effect=reject) as model:
+            task=self.ready()
+        self.assertFalse(task['draft_content_review']['passed'])
+        self.assertEqual(sum(c.args[0] is Draft for c in model.call_args_list),2)
+        self.assertFalse(task['renders'])
+
+    def test_audience_brief_survives_draft_save_without_becoming_public_copy(self):
+        brief={'reader':'正在了解M22的普通读者','questions':['不同模块各有什么分工？'],
+               'approach':'用三个具体小标题逐点介绍','defer_topics':['不相关的版本参数']}
+        def audience_generate(schema,instruction,sources,images=None,outline_anchor=None):
+            result,trace=fake_generate(schema,instruction,sources,images,outline_anchor)
+            if schema is EditorialPlan:
+                result=result.model_copy(update={'audience_brief':__import__('studio.models',fromlist=['AudienceBrief']).AudienceBrief.model_validate(brief)})
+            if schema is Draft:
+                result=Draft.model_validate({**result.model_dump(),'audience_brief':brief})
+            return result,trace
+        with patch('studio.llm.generate',side_effect=audience_generate):
+            task=self.ready()
+        with api.db() as conn:
+            saved=json.loads(conn.execute('SELECT body FROM tasks WHERE id=?',(task['id'],)).fetchone()[0])
+        self.assertEqual(saved['draft']['audience_brief'],brief)
+        public_copy=saved['draft']['body']+'\n'+'\n'.join(p['text'] for p in saved['draft']['pages'])
+        self.assertNotIn(brief['reader'],public_copy)
+        legacy=Draft(title='旧草稿',body='已有正文',pages=[])
+        self.assertIsNone(legacy.audience_brief)
 
     @patch('studio.llm.generate',side_effect=fake_generate)
     def test_ai_background_render_and_fallback(self,mock):
@@ -617,7 +827,7 @@ class StudioTests(unittest.TestCase):
         t=self.post(t,'/analysis-stage',stage='visual',decision='reject',feedback='请把视觉不确定项单独列出')
         self.assertEqual(t['analysis_stages']['visual']['status'],'ready')
         self.assertEqual([d['stage'] for d in t['analysis_decisions']],['retrieval','language','visual'])
-        self.assertEqual(mock.call_count,3)
+        self.assertEqual(sum(c.args[0] is Analysis for c in mock.call_args_list),2)
 
     def test_import_idempotent_and_malformed(self):
         r=self.client.post('/api/bundles',files={'bundle':('cases.zip',bundle(),'application/zip')})
@@ -655,7 +865,8 @@ class StudioTests(unittest.TestCase):
             self.assertTrue(evidence['copy_review']['confirmed'])
             self.assertTrue(all(v['status']=='accepted' for v in evidence['analysis_stages'].values()))
             Image.open(io.BytesIO(z.read('01.png'))).verify()
-        self.assertEqual(mock.call_count,3)
+        self.assertEqual(sum(c.args[0] is Draft for c in mock.call_args_list),1)
+        self.assertTrue(any(c.args[0] is DraftContentReview for c in mock.call_args_list))
 
     @patch('studio.llm.generate',side_effect=fake_generate)
     def test_photo_pixels_unchanged(self,mock):
@@ -671,7 +882,7 @@ class StudioTests(unittest.TestCase):
         raw=self.client.get('/api/tasks/'+t['id']+'/pages/2/render').content
         rendered=Image.open(io.BytesIO(raw));offset=t['renders']['2']['photo_offset_y']
         original=Image.open(io.BytesIO(picture())).convert('RGB')
-        self.assertIsNone(ImageChops.difference(original,rendered.crop((0,offset,320,offset+240))).getbbox())
+        self.assertIsNone(ImageChops.difference(original,rendered.crop((t['renders']['2'].get('photo_offset_x',0),offset,t['renders']['2'].get('photo_offset_x',0)+320,offset+240))).getbbox())
         t=self.post(t,'/copy',title='主题',body='正文',confirmed=True)
         r=self.client.get('/api/tasks/'+t['id']+'/export');self.assertEqual(r.status_code,200)
         with zipfile.ZipFile(io.BytesIO(r.content)) as z:
@@ -692,7 +903,7 @@ class StudioTests(unittest.TestCase):
     @patch('studio.llm.generate',side_effect=RuntimeError('secret-value'))
     def test_model_failure_saved_no_loop(self,mock):
         t=self.create();r=self.client.post('/api/tasks/'+t['id']+'/analyze',json={'revision':0})
-        self.assertEqual(r.status_code,502);self.assertNotIn('secret-value',r.text);self.assertEqual(mock.call_count,2)
+        self.assertEqual(r.status_code,502);self.assertNotIn('secret-value',r.text);self.assertEqual(mock.call_count,3)
         saved=self.client.get('/api/tasks/'+t['id']).json();self.assertIsNone(saved['analysis'])
         self.assertEqual(saved['stage'],'candidate');self.assertEqual(len(saved['failures']),1)
         with patch('studio.llm.generate',side_effect=fake_generate):saved=self.post(saved,'/analyze')
