@@ -6,7 +6,7 @@ set PYTHONIOENCODING=utf-8
 chcp 65001 >nul
 echo Starting... Please keep this window open.
 if not exist ".venv-studio\Scripts\python.exe" (
-  echo ERROR: Python environment missing. See DEPLOYMENT.md.
+  echo ERROR: Python environment missing. See docs/DEPLOYMENT.md.
   pause
   exit /b 1
 )

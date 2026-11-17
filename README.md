@@ -12,7 +12,7 @@
 
 ## 运行
 
-在项目根目录双击 `start_studio.bat`。开发者首次准备环境时按 [DEPLOYMENT.md](DEPLOYMENT.md) 安装 Python 依赖，并在 `frontend` 目录运行 `npm ci && npm run build`。
+在项目根目录双击 `start_studio.bat`。开发者首次准备环境时按 [部署说明](docs/DEPLOYMENT.md) 安装 Python 依赖，并在 `frontend` 目录运行 `npm ci && npm run build`。
 
 在“模型设置”页填写文本和图片模型接口。密钥只写入本机 `.env.card-model`，不会放进 Local Storage、历史记录或前端构建文件。不要在没有授权的情况下调用付费模型；这里只检查代码构建和本地页面，不自动生成图片。
 
@@ -36,3 +36,11 @@ flowchart LR
   History --> Store[(SQLite + 图片目录)]
   Browser --> Local[(Local Storage 快照)]
 ```
+
+## 项目文档
+
+- [部署与本地运行](docs/DEPLOYMENT.md)
+- [产品设计记录（历史）](docs/PRODUCT.md)
+- [项目规划（历史）](docs/ROADMAP.md)
+- [变更记录](docs/CHANGELOG.md)
+- [问题记录](docs/BADCASES.md)

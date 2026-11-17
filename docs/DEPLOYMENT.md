@@ -38,7 +38,7 @@
 
 ## 更新前端
 
-修改 `frontend/src` 后，在 `frontend` 文件夹执行 `npm ci`、`npm run typecheck`、`npm run build`。再关闭旧启动窗口，重新双击 `start_studio.bat`。当前 `/healthz` 版本为 `cases-20261104-vue1`。
+修改 `frontend/src` 后，在 `frontend` 文件夹执行 `npm ci`、`npm run typecheck`、`npm run build`。再关闭旧启动窗口，重新双击 `start_studio.bat`。可以通过 `/healthz` 查看当前运行版本。
 
 ## 容器
 
