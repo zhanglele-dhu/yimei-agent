@@ -4,6 +4,26 @@
 
 一个本地运行的 AI 图文创作工作台。工作流是：输入一句话 → 自动生成多页大纲 → 用户编辑 → 图片模型逐页生成完整图片 → 单页重绘/生成标题正文 → 历史恢复与图片下载。
 
+## 项目作品集
+
+![作品集第 1 页](docs/portfolio/page-1.png)
+
+![作品集第 2 页](docs/portfolio/page-2.png)
+
+![作品集第 3 页](docs/portfolio/page-3.png)
+
+![作品集第 4 页](docs/portfolio/page-4.png)
+
+![作品集第 5 页](docs/portfolio/page-5.png)
+
+![作品集第 6 页](docs/portfolio/page-6.png)
+
+![作品集第 7 页](docs/portfolio/page-7.png)
+
+![作品集第 8 页](docs/portfolio/page-8.png)
+
+![作品集第 9 页](docs/portfolio/page-9.png)
+
 ## 技术结构
 
 - 前端：Vue 3、TypeScript、Vite、Vue Router、Pinia。
