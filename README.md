@@ -18,7 +18,7 @@
 
 ## 维护前端
 
-先从 [frontend/README.md](frontend/README.md) 入门；RedInk Vue 源码的结构分析在 [frontend/REDINK-FRONTEND-ANALYSIS.md](frontend/REDINK-FRONTEND-ANALYSIS.md)。前端源码仅在 `frontend/src`，不要编辑构建后的 `studio/static/vue-app/assets/*`。
+先从 [frontend/README.md](frontend/README.md) 入门。前端源码位于 `frontend/src`，构建后的文件位于 `studio/static/vue-app/assets/`。
 
 ## 模块图
 
@@ -36,7 +36,3 @@ flowchart LR
   History --> Store[(SQLite + 图片目录)]
   Browser --> Local[(Local Storage 快照)]
 ```
-
-## 独立实现边界
-
-RedInk 仓库以 CC BY-NC-SA 4.0 发布。本项目借鉴其产品阶段和前后端职责划分，独立编写代码、文案、Prompt 与视觉，不复制 RedInk 源码、素材或品牌；商业分发前应单独确认适用的授权边界。
