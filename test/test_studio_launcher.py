@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import uvicorn
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent
 
 
 class LauncherTests(unittest.TestCase):

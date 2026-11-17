@@ -3,7 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-import test_studio
+from test import test_studio
 from fastapi.testclient import TestClient
 from studio import api, cases, research
 

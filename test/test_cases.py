@@ -1,11 +1,11 @@
 ﻿import io,json,tempfile,unittest,zipfile
 from pathlib import Path
 from PIL import Image
-from export_cases import build_bundle
+from collector.export_cases import build_bundle
 
 class CaseExportTests(unittest.TestCase):
     def test_current_bundle_matches_ocr_and_originals(self):
-        root=Path(__file__).parent/'data/m22_analysis'
+        root=Path(__file__).resolve().parent.parent/'collector/data/m22_analysis'
         with tempfile.TemporaryDirectory() as tmp:
             out=Path(tmp)/'cases.zip';m=build_bundle(root,out)
             self.assertEqual(len(m['cases']),87)

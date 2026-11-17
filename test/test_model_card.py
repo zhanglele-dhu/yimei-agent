@@ -164,7 +164,7 @@ class ModelCardTests(unittest.TestCase):
 
 class ModelCardApiTests(unittest.TestCase):
     def setUp(self):
-        import test_studio as fixtures
+        from test import test_studio as fixtures
         self.fixtures=fixtures
         self.fixture=fixtures.StudioTests('test_auth_cache_and_page_contract')
         self.fixture.setUp()

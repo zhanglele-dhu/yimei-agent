@@ -1,7 +1,7 @@
 import copy,io,json,tempfile,unittest,zipfile
 from pathlib import Path
 from unittest.mock import patch
-import test_studio
+from test import test_studio
 from fastapi.testclient import TestClient
 from studio import api,cases,editorial,expression,llm,rendering,tones
 from studio.models import ExpressionStudy,MaterialSheet,DraftContentReview,ExpressionCheck,ExpressionDraftReview,SharingDraftReview,SharingExpressionCheck,ToneDraftReview,QuestionOutline

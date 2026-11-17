@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import test_studio  # Shared isolated API configuration; never reads production tasks.
+from test import test_studio  # Shared isolated API configuration; never reads production tasks.
 from studio import api, evidence, llm, prompts
 
 

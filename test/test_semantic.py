@@ -65,7 +65,7 @@ class SemanticTests(unittest.TestCase):
 
 class SemanticApiTests(unittest.TestCase):
     def setUp(self):
-        import test_studio
+        from test import test_studio
         self.fixtures=test_studio
         self.fixture=test_studio.StudioTests('test_auth_cache_and_page_contract');self.fixture.setUp()
         self.addCleanup(self.fixture.doCleanups)

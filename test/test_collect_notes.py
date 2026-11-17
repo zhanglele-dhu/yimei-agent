@@ -2,7 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
-from collect_notes import parse_count, safe_cell, export, read_note
+from collector.collect_notes import parse_count, safe_cell, export, read_note
 
 
 class Tests(unittest.IsolatedAsyncioTestCase):

@@ -15,4 +15,4 @@
 - 新草稿提示词明确要求拍摄指导留在大纲 `instruction` 中，发布文字放在 `pages.text` 中。
 - 旧图片保持不变。核对文字并重新点击“确认并生成本页图片”后才生成新版；编辑区显示旧版提醒。聊天卡继续使用原有对话布局。
 
-验证：`python -m unittest test_card_layout`，另运行 `test_studio` 中照片像素、默认主题、AI 底图降级和对话卡等接口用例。
+验证：`python -m unittest test.test_card_layout`，另运行 `test_studio` 中照片像素、默认主题、AI 底图降级和对话卡等接口用例。

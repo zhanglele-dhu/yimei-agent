@@ -234,7 +234,7 @@ class StudioTests(unittest.TestCase):
     def test_demo_facts_front_back_consistent(self):
         """前端预填与后端兜底必须是同一份示例资料（防止两边漂移）。"""
         from studio.prompts import DEMO_SHOP_FACTS
-        js=(Path(__file__).parent/'studio/static/app.js').read_text(encoding='utf-8')
+        js=(Path(__file__).resolve().parent.parent/'studio/static/app.js').read_text(encoding='utf-8')
         for line in DEMO_SHOP_FACTS.splitlines():
             if line.strip():
                 self.assertIn(line,js,f'示例资料行在前端缺失：{line[:30]}')
